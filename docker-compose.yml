@@ -1,0 +1,16 @@
+﻿services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wifi-voucher-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wifi_voucher
+      POSTGRES_USER: wifi_admin
+      POSTGRES_PASSWORD: wifi_dev_2026
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:

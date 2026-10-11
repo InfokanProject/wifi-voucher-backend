@@ -1,0 +1,22 @@
+wifi-voucher-backend/
+├── prisma/
+│   ├── schema.prisma
+│   └── seed.ts
+├── src/
+│   ├── config/env.ts
+│   ├── lib/prisma.ts
+│   ├── modules/
+│   │   ├── packages/package.routes.ts
+│   │   ├── vouchers/voucher.routes.ts
+│   │   └── orders/order.routes.ts
+│   ├── utils/
+│   │   ├── order-number.ts
+│   │   └── voucher-generator.ts
+│   ├── app.ts
+│   └── server.ts
+├── .env.example
+├── .gitignore
+├── docker-compose.yml
+├── package.json
+├── tsconfig.json
+└── README.md
