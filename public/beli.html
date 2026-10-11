@@ -1,0 +1,647 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Beli Voucher WiFi Kos</title>
+  <style>
+    :root {
+      --navy: #142b45;
+      --teal: #087f8c;
+      --bg: #f4f7fa;
+      --muted: #667085;
+      --border: #e0e7ef;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--navy);
+      font-family: Arial, sans-serif;
+    }
+
+    header {
+      background: white;
+      border-bottom: 1px solid var(--border);
+      padding: 18px 20px;
+    }
+
+    .header-inner, main {
+      width: min(960px, 100%);
+      margin: auto;
+    }
+
+    .brand {
+      font-size: 20px;
+      font-weight: 800;
+    }
+
+    .brand span { color: var(--teal); }
+
+    .tagline {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 5px;
+    }
+
+    main { padding: 30px 20px 48px; }
+
+    h1 {
+      font-size: clamp(25px, 5vw, 34px);
+      margin: 0 0 9px;
+    }
+
+    .intro {
+      color: var(--muted);
+      margin: 0 0 25px;
+      line-height: 1.6;
+    }
+
+    .section-title {
+      font-size: 18px;
+      margin: 25px 0 14px;
+    }
+
+    .packages {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .package {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      padding: 17px;
+      cursor: pointer;
+      text-align: left;
+      color: inherit;
+      font: inherit;
+      min-width: 0;
+    }
+
+    .package.selected {
+      border: 2px solid var(--teal);
+      padding: 16px;
+      background: #f0fbfb;
+    }
+
+    .package-name {
+      font-weight: 700;
+      font-size: 16px;
+    }
+
+    .price {
+      font-weight: 800;
+      font-size: 22px;
+      margin: 12px 0 8px;
+      overflow-wrap: anywhere;
+    }
+
+    .speed {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .methods {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .method {
+      background: white;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      cursor: pointer;
+    }
+
+    .method.selected {
+      border: 2px solid var(--teal);
+      padding: 15px;
+      background: #f0fbfb;
+    }
+
+    .method input { margin-top: 4px; }
+
+    .method-title { font-weight: 700; }
+
+    .method-desc {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--muted);
+      margin-top: 5px;
+    }
+
+    .field-label {
+      display: block;
+      font-weight: 700;
+      margin: 22px 0 8px;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 13px;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      font: inherit;
+      background: white;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+      margin-top: 7px;
+    }
+
+    .submit {
+      margin-top: 22px;
+      width: 100%;
+      border: 0;
+      border-radius: 10px;
+      background: var(--teal);
+      color: white;
+      padding: 15px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .submit:disabled {
+      opacity: .6;
+      cursor: wait;
+    }
+
+    .notice, .result {
+      margin-top: 18px;
+      padding: 15px;
+      border-radius: 10px;
+      background: white;
+      border: 1px solid var(--border);
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+
+    .result h2 { font-size: 19px; margin-top: 0; }
+
+    .hidden { display: none; }
+
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      padding: 20px;
+    }
+
+    @media (max-width: 650px) {
+      main { padding: 25px 15px 36px; }
+      .packages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .package { padding: 13px; }
+      .package.selected { padding: 12px; }
+      .price { font-size: 19px; }
+      .methods { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">WiFi <span>Kos</span></div>
+      <div class="tagline">Internet kos praktis, pilih paketmu.</div>
+    </div>
+  </header>
+
+  <main>
+    <h1>Pilih Paket WiFi</h1>
+    <p class="intro">
+      Pilih masa aktif dan kecepatan sesuai kebutuhanmu.
+      Voucher akan diproses setelah pembayaran terverifikasi.
+    </p>
+
+    <h2 class="section-title">1. Pilih paket</h2>
+    <div id="packages" class="packages">
+      <div class="notice">Memuat daftar paket...</div>
+    </div>
+
+    <h2 class="section-title">2. Pilih metode pembayaran</h2>
+    <div class="methods">
+      <label class="method selected" data-method="QRIS">
+        <input type="radio" name="payment" value="QRIS" checked>
+        <div>
+          <div class="method-title">QRIS Otomatis</div>
+          <div class="method-desc">
+            Bayar melalui QRIS. Pesanan akan dikonfirmasi otomatis
+            setelah integrasi pembayaran aktif.
+          </div>
+        </div>
+      </label>
+
+      <label class="method" data-method="WHATSAPP">
+        <input type="radio" name="payment" value="WHATSAPP">
+        <div>
+          <div class="method-title">WhatsApp Owner</div>
+          <div class="method-desc">
+            Hubungi owner untuk instruksi pembayaran dan konfirmasi manual.
+          </div>
+        </div>
+      </label>
+    </div>
+
+    <label class="field-label" for="customer">
+      Nomor WhatsApp pembeli (opsional)
+    </label>
+    <input
+      id="customer"
+      type="text"
+      placeholder="Contoh: 081234567890"
+      autocomplete="tel"
+    >
+    <div class="hint">
+      Digunakan sebagai informasi pesanan jika diperlukan.
+      Jangan masukkan PIN, kata sandi, atau kode OTP.
+    </div>
+
+    <button id="createOrder" class="submit" disabled>
+      Pilih paket terlebih dahulu
+    </button>
+
+    <div id="message" class="notice hidden" role="status"></div>
+
+    <section id="orderResult" class="result hidden" aria-live="polite">
+      <h2>Pesanan berhasil dibuat</h2>
+      <p id="orderDetails"></p>
+      <p id="paymentDetails"></p>
+      <button id="continuePayment" class="submit hidden">
+        Lanjutkan ke WhatsApp Owner
+      </button>
+      <p class="hint">
+        Kode voucher belum diterbitkan. Tunggu sampai pembayaran
+        diverifikasi dan pesanan berhasil diproses.
+      </p>
+    </section>
+  </main>
+
+  <footer>WiFi Kos · Layanan voucher internet</footer>
+
+  <script>
+    // Ganti dengan nomor WhatsApp owner setelah siap.
+    // Format internasional tanpa tanda +, spasi, atau tanda hubung.
+    const OWNER_WA = "6285846462230";
+
+    let packages = [];
+    let selectedPackage = null;
+    let currentOrder = null;
+    let pendingOrderAttempt = null;
+
+    const packageContainer = document.getElementById("packages");
+    const createButton = document.getElementById("createOrder");
+    const messageBox = document.getElementById("message");
+    const orderResult = document.getElementById("orderResult");
+    const orderDetails = document.getElementById("orderDetails");
+    const paymentDetails = document.getElementById("paymentDetails");
+    const continueButton = document.getElementById("continuePayment");
+
+    function showMessage(message) {
+      messageBox.textContent = message;
+      messageBox.classList.remove("hidden");
+    }
+
+    function clearMessage() {
+      messageBox.textContent = "";
+      messageBox.classList.add("hidden");
+    }
+
+    function formatRupiah(value) {
+      return new Intl.NumberFormat("id-ID", {
+        style: "currency",
+        currency: "IDR",
+        maximumFractionDigits: 0
+      }).format(value);
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;"
+      })[char]);
+    }
+
+    function renderPackages() {
+      if (!packages.length) {
+        packageContainer.innerHTML =
+          '<div class="notice">Belum ada paket yang tersedia.</div>';
+        return;
+      }
+
+      packageContainer.innerHTML = "";
+
+      packages.forEach(pkg => {
+        const card = document.createElement("button");
+        card.type = "button";
+        card.className = "package";
+        card.dataset.code = pkg.code;
+
+        const duration = Number(pkg.durationMinutes);
+        let durationLabel = pkg.name || pkg.code;
+
+        if (!pkg.name && duration > 0) {
+          durationLabel = duration >= 1440
+            ? `${duration / 1440} Hari`
+            : `${duration} Menit`;
+        }
+
+        card.innerHTML = `
+          <div class="package-name">${escapeHtml(durationLabel)}</div>
+          <div class="price">${formatRupiah(Number(pkg.price))}</div>
+          <div class="speed">${escapeHtml(pkg.speedMbps)} Mbps</div>
+        `;
+
+        card.addEventListener("click", () => {
+          selectedPackage = pkg;
+
+          document.querySelectorAll(".package").forEach(item => {
+            item.classList.toggle(
+              "selected",
+              item.dataset.code === pkg.code
+            );
+          });
+
+          createButton.disabled = false;
+          createButton.textContent =
+            `Buat Pesanan · ${formatRupiah(Number(pkg.price))}`;
+
+          clearMessage();
+        });
+
+        packageContainer.appendChild(card);
+      });
+    }
+
+    
+    function renderCurrentOrder(order) {
+      const status = order.status || "PENDING";
+      const heading = orderResult.querySelector("h2");
+
+      heading.textContent =
+        status === "FULFILLED" ? "Pesanan selesai" :
+        status === "EXPIRED" ? "Pesanan kedaluwarsa" :
+        status === "CANCELLED" ? "Pesanan dibatalkan" :
+        "Detail pesanan";
+
+      orderDetails.textContent =
+        `Nomor pesanan: ${order.orderNumber}. ` +
+        `Paket: ${order.packageName}. ` +
+        `Harga: ${formatRupiah(Number(order.price))}. ` +
+        `Status: ${status}.`;
+
+      continueButton.classList.add("hidden");
+
+      if (status === "PENDING") {
+        if (order.paymentMethod === "QRIS") {
+          paymentDetails.textContent =
+            "QRIS otomatis belum tersedia. Hubungi WhatsApp Owner " +
+            "untuk instruksi pembayaran manual. Pesanan belum dianggap lunas.";
+        } else {
+          paymentDetails.textContent =
+            "Pesanan menunggu pembayaran dan verifikasi owner.";
+          continueButton.classList.remove("hidden");
+        }
+      } else if (status === "FULFILLED") {
+        paymentDetails.textContent =
+          "Pesanan sudah diproses. Ikuti informasi voucher dari owner.";
+      } else if (status === "EXPIRED") {
+        paymentDetails.textContent =
+          "Pesanan sudah kedaluwarsa. Buat pesanan baru jika masih ingin membeli.";
+      } else {
+        paymentDetails.textContent =
+          `Status pesanan saat ini: ${status}. Hubungi owner jika perlu bantuan.`;
+      }
+
+      orderResult.classList.remove("hidden");
+    }
+
+    async function restoreSavedOrder() {
+      const savedOrderId = sessionStorage.getItem("wifiOrderId");
+
+      if (!savedOrderId) return;
+
+      try {
+        const response = await fetch(
+          `/api/orders/${encodeURIComponent(savedOrderId)}`
+        );
+
+        if (!response.ok) {
+          if (response.status === 404) {
+            sessionStorage.removeItem("wifiOrderId");
+            sessionStorage.removeItem("wifiPaymentMethod");
+          }
+          return;
+        }
+
+        const data = await response.json();
+
+        currentOrder = {
+          orderId: data.id,
+          orderNumber: data.orderNumber,
+          status: data.status,
+          amount: data.amount,
+          price: Number(data.amount),
+          packageName: data.package.name || data.package.code,
+          paymentMethod:
+            sessionStorage.getItem("wifiPaymentMethod") || "MANUAL"
+        };
+
+        renderCurrentOrder(currentOrder);
+
+        createButton.disabled = true;
+        createButton.textContent = "Pesanan sudah dibuat";
+      } catch (error) {
+        showMessage(
+          "Detail pesanan belum bisa dimuat. Coba refresh kembali."
+        );
+      }
+    }
+
+    async function loadPackages() {
+      try {
+        const response = await fetch("/api/packages");
+        if (!response.ok) {
+          throw new Error("Gagal mengambil daftar paket.");
+        }
+
+        const data = await response.json();
+        packages = Array.isArray(data)
+          ? data
+          : Array.isArray(data.packages)
+            ? data.packages
+            : [];
+
+        renderPackages();
+      } catch (error) {
+        packageContainer.innerHTML =
+          '<div class="notice">Daftar paket gagal dimuat. Coba muat ulang halaman.</div>';
+      }
+    }
+
+    document.querySelectorAll('input[name="payment"]').forEach(input => {
+      input.addEventListener("change", () => {
+        document.querySelectorAll(".method").forEach(label => {
+          label.classList.toggle(
+            "selected",
+            label.dataset.method === input.value
+          );
+        });
+      });
+    });
+
+    
+    createButton.addEventListener("click", async () => {
+      if (!selectedPackage) {
+        showMessage("Pilih paket terlebih dahulu.");
+        return;
+      }
+
+      if (currentOrder) {
+        showMessage("Pesanan sudah dibuat. Jangan membuat pesanan yang sama lagi.");
+        return;
+      }
+
+      const paymentMethod = document.querySelector(
+        'input[name="payment"]:checked'
+      ).value;
+
+      const packageCode = selectedPackage.code;
+      const customerIdentifier =
+        document.getElementById("customer").value.trim();
+
+      // Jika request sebelumnya belum mendapat jawaban,
+      // gunakan kunci dan data yang sama saat mencoba lagi.
+      if (pendingOrderAttempt) {
+        if (
+          pendingOrderAttempt.packageCode !== packageCode ||
+          pendingOrderAttempt.customerIdentifier !== customerIdentifier
+        ) {
+          showMessage(
+            "Percobaan sebelumnya belum dipastikan hasilnya. " +
+            "Gunakan paket dan nomor WhatsApp yang sama untuk mencoba lagi."
+          );
+          return;
+        }
+      } else {
+        pendingOrderAttempt = {
+          idempotencyKey: crypto.randomUUID(),
+          packageCode,
+          customerIdentifier
+        };
+      }
+
+      const idempotencyKey = pendingOrderAttempt.idempotencyKey;
+
+      createButton.disabled = true;
+      createButton.textContent = "Membuat pesanan...";
+      clearMessage();
+      orderResult.classList.add("hidden");
+      continueButton.classList.add("hidden");
+
+      try {
+        const response = await fetch("/api/orders", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            packageCode,
+            customerIdentifier: customerIdentifier || undefined,
+            idempotencyKey
+          })
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          // Server memberikan jawaban pasti bahwa request gagal.
+          pendingOrderAttempt = null;
+
+          throw new Error(
+            data.message || data.error || "Pesanan gagal dibuat."
+          );
+        }
+
+        
+        currentOrder = {
+          ...data,
+          paymentMethod,
+          packageName: selectedPackage.name || selectedPackage.code,
+          price: Number(data.amount)
+        };
+
+        sessionStorage.setItem("wifiOrderId", data.orderId);
+        sessionStorage.setItem("wifiPaymentMethod", paymentMethod);
+
+        pendingOrderAttempt = null;
+
+        renderCurrentOrder(currentOrder);
+
+
+      } catch (error) {
+        showMessage(
+          error instanceof Error
+            ? error.message
+            : "Koneksi bermasalah. Coba ulangi dengan data yang sama."
+        );
+      } finally {
+        if (currentOrder) {
+          createButton.disabled = true;
+          createButton.textContent = "Pesanan sudah dibuat";
+        } else {
+          createButton.disabled = false;
+          createButton.textContent = selectedPackage
+            ? `Buat Pesanan · ${formatRupiah(Number(selectedPackage.price))}`
+            : "Pilih paket terlebih dahulu";
+        }
+      }
+    });
+
+
+    continueButton.addEventListener("click", () => {
+      if (!currentOrder) return;
+
+      if (!/^62\d{8,15}$/.test(OWNER_WA)) {
+        showMessage(
+          "Nomor WhatsApp owner belum dikonfigurasi. Hubungi owner secara langsung."
+        );
+        return;
+      }
+
+      const text = [
+        "Halo Owner, saya ingin membayar voucher WiFi.",
+        `Nomor pesanan: ${currentOrder.orderNumber || currentOrder.orderId}`,
+        `Paket: ${currentOrder.packageName}`,
+        `Harga: ${formatRupiah(currentOrder.price)}`,
+        "",
+        "Mohon instruksi pembayaran. Terima kasih."
+      ].join("\n");
+
+      window.open(
+        `https://wa.me/${OWNER_WA}?text=${encodeURIComponent(text)}`,
+        "_blank",
+        "noopener,noreferrer"
+      );
+    });
+
+    
+    loadPackages();
+    restoreSavedOrder();
+
+  </script>
+</body>
+</html>

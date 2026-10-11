@@ -38,6 +38,8 @@ export function buildApp() {
     saveUninitialized: false
   });
 
+  
+  
   app.get("/", async (_request, reply) => {
     const html = await readFile(
       resolve(process.cwd(), "public", "index.html"),
@@ -48,6 +50,19 @@ export function buildApp() {
       .type("text/html; charset=utf-8")
       .send(html);
   });
+
+  app.get("/beli", async (_request, reply) => {
+    const html = await readFile(
+      resolve(process.cwd(), "public", "beli.html"),
+      "utf8"
+    );
+
+    return reply
+      .type("text/html; charset=utf-8")
+      .send(html);
+  });
+
+
 
   app.get("/health", async () => ({
     ok: true,
