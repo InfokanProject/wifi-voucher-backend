@@ -175,3 +175,55 @@ export async function simulateMikrotikActivation(
 
   return { ...user };
 }
+
+
+export async function deleteMikrotikUser(username: string) {
+  if (env.MIKROTIK_MODE === "simulator") {
+    const deleted = simulatedUsers.delete(username);
+
+    return {
+      found: deleted,
+      deleted,
+      mode: "simulator" as const,
+    };
+  }
+
+  const api = createMikrotikClient();
+
+  try {
+    await api.connect();
+
+    const users = await api.write("/ip/hotspot/user/print", [
+      `?name=${username}`,
+    ]);
+
+    const user = users[0];
+
+    if (!user) {
+      return {
+        found: false,
+        deleted: false,
+        mode: "real" as const,
+      };
+    }
+
+    const userId = user[".id"];
+
+    if (!userId) {
+      throw new Error("MIKROTIK_USER_ID_NOT_FOUND");
+    }
+
+    await api.write("/ip/hotspot/user/remove", [
+      `=.id=${userId}`,
+    ]);
+
+    return {
+      found: true,
+      deleted: true,
+      mode: "real" as const,
+    };
+  } finally {
+    await api.close();
+  }
+}
+

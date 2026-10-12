@@ -1,0 +1,1037 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1120">
+  <title>WiFi Voucher — Owner</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1120;
+      --panel: #131c2e;
+      --panel2: #19253a;
+      --border: #2a3850;
+      --text: #edf3ff;
+      --muted: #9aabc4;
+      --blue: #60a5fa;
+      --green: #4ade80;
+      --red: #f87171;
+      --yellow: #fbbf24;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, sans-serif;
+    }
+
+    button, input, select { font: inherit; }
+
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 9px 12px;
+      background: #2563eb;
+      color: white;
+      font-weight: 650;
+      cursor: pointer;
+    }
+
+    button:disabled { opacity: .55; cursor: wait; }
+
+    input, select {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .topbar {
+      min-height: 58px;
+      padding: 12px 4%;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand { font-size: 17px; font-weight: 800; }
+    .brand span { color: var(--blue); }
+    .top-actions, .row { display: flex; align-items: center; gap: 8px; }
+    .muted { color: var(--muted); }
+    .small { font-size: 12px; }
+    main { max-width: 1250px; margin: auto; padding: 22px 4%; }
+    h1 { margin: 0; font-size: 25px; }
+    h2 { margin: 0; font-size: 16px; }
+    p { margin: 5px 0 0; }
+    .hidden { display: none !important; }
+    .section { margin-top: 18px; }
+
+    .panel, .stat {
+      min-width: 0;
+      padding: 15px;
+      border: 1px solid var(--border);
+      border-radius: 11px;
+      background: var(--panel);
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    .stat-label { color: var(--muted); font-size: 12px; }
+    .stat-value {
+      margin-top: 5px;
+      font-size: clamp(20px, 2.5vw, 27px);
+      font-weight: 800;
+      overflow-wrap: anywhere;
+    }
+
+    .blue { color: var(--blue); }
+    .green { color: var(--green); }
+    .yellow { color: var(--yellow); }
+    .red { color: var(--red); }
+
+    .nav {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      margin-top: 18px;
+      padding-bottom: 3px;
+    }
+
+    .nav button {
+      flex: 0 0 auto;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .nav button.active {
+      background: #1d3557;
+      border-color: #3b82f6;
+      color: white;
+    }
+
+    .toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .secondary {
+      background: var(--panel2);
+      border: 1px solid var(--border);
+    }
+
+    .table-wrap { overflow: auto; max-height: 55vh; }
+    table { width: 100%; border-collapse: collapse; text-align: left; }
+    th, td {
+      padding: 10px 9px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    
+    .voucher-tabs {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 4px 0 12px;
+      margin-bottom: 8px;
+    }
+
+    .voucher-tab {
+      flex: 0 0 auto;
+      padding: 9px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .voucher-tab.active {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
+
+    .voucher-tab:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+
+    th {
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 650;
+    }
+
+    td { font-size: 12px; }
+    .status {
+      display: inline-block;
+      padding: 3px 7px;
+      border-radius: 20px;
+      background: var(--panel2);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .status.good { color: var(--green); }
+    .status.wait { color: var(--yellow); }
+    .status.bad { color: var(--red); }
+
+    .notice {
+      margin-top: 10px;
+      padding: 9px 11px;
+      border-radius: 8px;
+      background: var(--panel2);
+      overflow-wrap: anywhere;
+    }
+
+    .notice.error { color: var(--red); }
+    .notice.success { color: var(--green); }
+    .empty { padding: 22px; text-align: center; color: var(--muted); }
+    .form-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 2fr) minmax(90px, 1fr) auto;
+      align-items: end;
+      gap: 10px;
+    }
+
+    .field { margin-top: 12px; }
+    .package-list { display: grid; gap: 8px; }
+    .package-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 0;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .package-item:last-child { border-bottom: 0; }
+    .package-price { color: var(--blue); font-weight: 750; white-space: nowrap; }
+    .login-wrap { max-width: 400px; margin: 55px auto; }
+    .login-wrap .panel { padding: 22px; }
+    footer { margin-top: 18px; color: var(--muted); font-size: 11px; }
+
+    @media (max-width: 700px) {
+      main { padding: 17px 4%; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .stat { padding: 12px; }
+      .form-grid { grid-template-columns: 1fr 1fr; }
+      .form-grid button { grid-column: 1 / -1; }
+      .table-wrap { max-height: 60vh; }
+    }
+
+      .voucher-search {
+      display: flex;
+      gap: 8px;
+      margin: 8px 0 14px;
+    }
+
+    .voucher-search input {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .voucher-search button {
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 390px) {
+      h1 { font-size: 22px; }
+      .brand { font-size: 15px; }
+      .topbar { padding-inline: 12px; }
+      .stats { gap: 7px; }
+      .stat-value { font-size: 20px; }
+      .top-actions { gap: 5px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">WiFi <span>Voucher</span></div>
+    <div class="top-actions">
+      <span id="backendStatus" class="muted small">Memeriksa...</span>
+      <button id="logoutButton" class="secondary hidden" type="button">Keluar</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="loginSection" class="login-wrap">
+      <div class="panel">
+        <h1>Dashboard Owner</h1>
+        <p class="muted">Login untuk melihat kondisi usaha WiFi.</p>
+        <form id="loginForm">
+          <div class="field">
+            <label for="adminPassword">Password admin</label>
+            <input id="adminPassword" type="password" required maxlength="256" autocomplete="current-password">
+          </div>
+          <button id="loginButton" type="submit">Login</button>
+          <div id="loginMessage" aria-live="polite"></div>
+        </form>
+      </div>
+    </section>
+
+    <section id="dashboardSection" class="hidden">
+      <div class="row" style="justify-content:space-between;flex-wrap:wrap">
+        <div>
+          <h1>Ringkasan Owner</h1>
+          <p class="muted small">Kondisi usaha WiFi dalam satu tampilan.</p>
+        </div>
+        <button id="refreshStatsButton" class="secondary" type="button">↻ Perbarui</button>
+      </div>
+
+            <div class="stats">
+        <div class="stat">
+          <div class="stat-label">Voucher tersedia</div>
+          <div id="stockValue" class="stat-value blue">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Voucher direservasi</div>
+          <div id="reservedValue" class="stat-value yellow">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Voucher aktif</div>
+          <div id="activeValue" class="stat-value green">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Order pending</div>
+          <div id="pendingValue" class="stat-value yellow">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Pembayaran berhasil</div>
+          <div id="paidValue" class="stat-value green">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Order selesai</div>
+          <div id="fulfilledValue" class="stat-value green">—</div>
+        </div>
+        <div class="stat">
+          <div class="stat-label">Omzet terbayar</div>
+          <div id="revenueValue" class="stat-value">—</div>
+        </div>
+      </div>
+
+      <div class="nav" role="navigation" aria-label="Menu dashboard">
+        <button class="active" data-view="overview" type="button">Ringkasan</button>
+        <button data-view="vouchers" type="button">Voucher</button>
+        <button data-view="orders" type="button">Order</button>
+        <button data-view="packages" type="button">Paket / Generate</button>
+      </div>
+
+      <section id="view-overview" class="section">
+        <div class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Status sistem</h2>
+              <p class="muted small">Informasi singkat untuk owner.</p>
+            </div>
+          </div>
+          <div class="row" style="justify-content:space-between;flex-wrap:wrap;padding:5px 0">
+            <span class="muted">Backend</span>
+            <strong id="healthValue">Memeriksa...</strong>
+          </div>
+          <div class="row" style="justify-content:space-between;flex-wrap:wrap;padding:5px 0">
+            <span class="muted">Voucher direservasi</span>
+            <strong id="systemReservedValue">—</strong>
+          </div>
+          <div class="row" style="justify-content:space-between;flex-wrap:wrap;padding:5px 0">
+            <span class="muted">Voucher aktif</span>
+            <strong id="systemActiveValue">—</strong>
+          </div>
+          <div class="row" style="justify-content:space-between;flex-wrap:wrap;padding:5px 0">
+            <span class="muted">Paket aktif</span>
+            <strong id="packageCount">—</strong>
+          </div>
+        </div>
+        <div class="panel section">
+          <div class="toolbar">
+            <div>
+              <h2>Order terbaru</h2>
+              <p class="muted small">Ringkasan lima order terakhir.</p>
+            </div>
+            <button class="secondary" data-go="orders" type="button">Semua order</button>
+          </div>
+          <div class="table-wrap">
+            <table>
+              
+<thead>
+  <tr>
+    <th>Kode</th>
+    <th>Status</th>
+    <th>Dibuat</th>
+    <th>Aktivasi</th>
+    <th>Kedaluwarsa</th>
+    <th>Order terkait</th>
+    <th>Aksi</th>
+  </tr>
+</thead>
+<tbody id="voucherRows">
+  <tr><td colspan="7" class="empty">Pilih menu Voucher untuk memuat data.</td></tr>
+</tbody>
+
+            </table>
+          </div>
+        </div>
+      </section>
+
+      
+      <section id="view-vouchers" class="section panel hidden">
+        <div class="toolbar">
+          <div>
+            <h2>Voucher</h2>
+            <p class="muted small">Maksimal 100 voucher terbaru, dipisahkan berdasarkan paket.</p>
+          </div>
+          <button id="refreshVouchersButton" class="secondary" type="button">↻</button>
+        </div>
+
+        <div id="voucherMessage" aria-live="polite"></div>
+
+        <div id="voucherPackageTabs" class="voucher-tabs" role="tablist" aria-label="Filter paket voucher">
+          <button class="voucher-tab active" type="button" data-package-code="12J" role="tab" aria-selected="true">12 Jam</button>
+          <button class="voucher-tab" type="button" data-package-code="1H" role="tab" aria-selected="false">1 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="3H" role="tab" aria-selected="false">3 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="7H" role="tab" aria-selected="false">7 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="14H" role="tab" aria-selected="false">14 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="30H" role="tab" aria-selected="false">30 Hari</button>
+        </div>
+
+        <p id="voucherPackageSummary" class="muted small">Memuat voucher...</p>
+        <div class="voucher-search">
+  <input
+    id="voucherSearchInput"
+    type="search"
+    placeholder="Cari kode voucher..."
+    aria-label="Cari kode voucher"
+    autocomplete="off"
+  />
+  <button id="clearVoucherSearchButton" class="secondary" type="button">
+    Hapus
+  </button>
+</div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Kode</th>
+                <th>Status</th>
+                <th>Dibuat</th>
+                <th>Aktivasi</th>
+                <th>Kedaluwarsa</th>
+                <th>Order terkait</th>
+              </tr>
+            </thead>
+            <tbody id="voucherRows">
+              <tr><td colspan="6" class="empty">Pilih menu Voucher untuk memuat data.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+
+      <section id="view-orders" class="section panel hidden">
+        <div class="toolbar">
+          <div>
+            <h2>Order</h2>
+            <p class="muted small">Maksimal 100 order terbaru.</p>
+          </div>
+          <button id="refreshOrdersButton" class="secondary" type="button">↻</button>
+        </div>
+        <div id="ordersMessage" aria-live="polite"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              
+<tr><th>Nomor</th><th>Paket</th><th>Nominal</th><th>Order</th><th>Bayar</th><th>Dibuat</th><th>Aksi</th></tr>
+
+            </thead>
+            <tbody id="orderRows">
+              <tr><td colspan="6" class="empty">Pilih menu Order untuk memuat data.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="view-packages" class="section hidden">
+        <div class="panel">
+          <div class="toolbar">
+            <div>
+              <h2>Paket WiFi</h2>
+              <p class="muted small">Daftar paket yang tersedia untuk dijual.</p>
+            </div>
+            <button id="refreshPackagesButton" class="secondary" type="button">↻</button>
+          </div>
+          <div id="packages" class="package-list">
+            <div class="empty">Memuat paket...</div>
+          </div>
+        </div>
+
+        <div class="panel section">
+          <h2>Generate voucher</h2>
+          <p class="muted small">Membuat voucher di database, belum membuat akun MikroTik secara langsung.</p>
+          <form id="generateForm" class="form-grid section">
+            <div>
+              <label for="packageSelect">Paket</label>
+              <select id="packageSelect" required></select>
+            </div>
+            <div>
+              <label for="quantity">Jumlah</label>
+              <input id="quantity" type="number" min="1" max="1000" value="1" required>
+            </div>
+            <button id="generateButton" type="submit">Generate</button>
+          </form>
+          <div id="generateMessage" aria-live="polite"></div>
+        </div>
+      </section>
+
+      <footer>WiFi Voucher · Dashboard ringan · Pembaruan manual</footer>
+    </section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    let currentView = "overview";
+    let packageData = [];
+    let loadedViews = new Set();
+
+    function escapeHtml(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;",
+        '"': "&quot;", "'": "&#39;"
+      })[char]);
+    }
+
+    function rupiah(value) {
+      return new Intl.NumberFormat("id-ID", {
+        style: "currency",
+        currency: "IDR",
+        maximumFractionDigits: 0
+      }).format(Number(value) || 0);
+    }
+
+    function dateLabel(value) {
+      if (!value) return "—";
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? "—" : date.toLocaleString("id-ID");
+    }
+
+    function statusClass(status) {
+      const value = String(status || "").toUpperCase();
+      if (["PAID", "FULFILLED", "ACTIVATED", "STOCK"].includes(value)) return "good";
+      if (["PENDING", "RESERVED", "FULFILLING"].includes(value)) return "wait";
+      if (["FAILED", "EXPIRED", "CANCELLED", "DISABLED", "PAYMENT_FAILED"].includes(value)) return "bad";
+      return "";
+    }
+
+    function statusBadge(status) {
+      const safe = escapeHtml(status || "—");
+      return `<span class="status ${statusClass(status)}">${safe}</span>`;
+    }
+
+    function showMessage(id, message, type = "") {
+      const el = $(id);
+      el.className = message ? "notice" + (type ? " " + type : "") : "";
+      el.textContent = message;
+    }
+
+    async function api(url, options = {}) {
+      const response = await fetch(url, {
+        credentials: "same-origin",
+        ...options,
+        headers: {
+          ...(options.body ? { "Content-Type": "application/json" } : {}),
+          ...(options.headers || {})
+        }
+      });
+
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        if (response.status === 401 && url !== "/api/admin/login") {
+          setLoggedIn(false);
+        }
+        throw new Error(data.error || `Permintaan gagal (${response.status})`);
+      }
+      return data;
+    }
+
+    function setLoggedIn(value) {
+      $("loginSection").classList.toggle("hidden", value);
+      $("dashboardSection").classList.toggle("hidden", !value);
+      $("logoutButton").classList.toggle("hidden", !value);
+    }
+
+    async function checkHealth() {
+      try {
+        const result = await api("/health");
+        $("backendStatus").textContent = result.ok ? "● Online" : "● Periksa";
+        $("backendStatus").className = "small " + (result.ok ? "green" : "yellow");
+        $("healthValue").textContent = result.ok ? "Online" : "Periksa";
+      } catch {
+        $("backendStatus").textContent = "● Offline";
+        $("backendStatus").className = "small red";
+        $("healthValue").textContent = "Offline";
+      }
+    }
+
+    async function loadStats() {
+      const stats = await api("/api/admin/dashboard/stats");
+      $("stockValue").textContent = stats.voucherStock ?? 0;
+      $("pendingValue").textContent = stats.ordersPending ?? 0;
+      $("paidValue").textContent = stats.paymentsPaid ?? 0;
+      $("revenueValue").textContent = rupiah(stats.revenuePaid);
+      $("reservedValue").textContent = stats.voucherReserved ?? 0;
+      $("activeValue").textContent = stats.voucherActivated ?? 0;
+      $("systemReservedValue").textContent = stats.voucherReserved ?? 0;
+      $("systemActiveValue").textContent = stats.voucherActivated ?? 0;
+      $("fulfilledValue").textContent = stats.ordersFulfilled ?? 0;
+      await checkHealth();
+    }
+
+    async function loadPackages() {
+      packageData = await api("/api/packages");
+      $("packageCount").textContent = packageData.length;
+
+      $("packages").innerHTML = packageData.length
+        ? packageData.map((pkg) => `
+          <div class="package-item">
+            <div>
+              <strong>${escapeHtml(pkg.name)}</strong>
+              <div class="muted small">${escapeHtml(pkg.code)} · ${escapeHtml(pkg.durationMinutes)} menit</div>
+            </div>
+            <div class="package-price">${escapeHtml(rupiah(pkg.price))}</div>
+          </div>
+        `).join("")
+        : '<div class="empty">Belum ada paket.</div>';
+
+      $("packageSelect").innerHTML = packageData.map((pkg) => `
+        <option value="${escapeHtml(pkg.code)}">${escapeHtml(pkg.name)} — ${escapeHtml(rupiah(pkg.price))}</option>
+      `).join("");
+    }
+
+    
+    let voucherPackageFilter = "12J";
+    let cachedVouchers = [];
+
+    function renderVouchers() {
+      const searchTerm = $("voucherSearchInput").value.trim().toUpperCase();
+
+const filtered = cachedVouchers.filter((voucher) => {
+  const matchesPackage =
+    voucher.package?.code === voucherPackageFilter;
+
+  const matchesCode =
+    (voucher.code || "").toUpperCase().includes(searchTerm);
+
+  return matchesPackage && matchesCode;
+});
+
+      $("voucherPackageSummary").textContent =
+  `${filtered.length} voucher ditemukan pada paket ${
+    ({
+      "12J": "12 Jam",
+      "1H": "1 Hari",
+      "3H": "3 Hari",
+      "7H": "7 Hari",
+      "14H": "14 Hari",
+      "30H": "30 Hari"
+    })[voucherPackageFilter]
+  } (dari maksimal 100 voucher terbaru).`;
+
+      
+$("voucherRows").innerHTML = filtered.length
+  ? filtered.map((voucher) => `
+      <tr>
+        <td>${escapeHtml(voucher.code)}</td>
+        <td>${statusBadge(voucher.status)}</td>
+        <td>${escapeHtml(dateLabel(voucher.createdAt))}</td>
+        <td>${escapeHtml(dateLabel(voucher.activatedAt))}</td>
+        <td>${escapeHtml(dateLabel(voucher.expiresAt))}</td>
+        <td>${escapeHtml(voucher.order?.orderNumber || "—")}</td>
+        <td>
+          ${
+            voucher.status === "STOCK" && !voucher.order
+              ? `<button
+                   type="button"
+                   class="danger"
+                   data-delete-voucher="${escapeHtml(voucher.id)}"
+                 >Hapus</button>`
+              : '<span class="muted">—</span>'
+          }
+        </td>
+      </tr>
+    `).join("")
+  : '<tr><td colspan="7" class="empty">Belum ada voucher untuk paket ini.</td></tr>';
+
+
+      document.querySelectorAll("#voucherPackageTabs .voucher-tab").forEach((tab) => {
+        const active = tab.dataset.packageCode === voucherPackageFilter;
+        tab.classList.toggle("active", active);
+        tab.setAttribute("aria-selected", String(active));
+      });
+    }
+
+    async function loadVouchers() {
+      showMessage("voucherMessage", "");
+      $("voucherPackageSummary").textContent = "Memuat voucher...";
+
+      try {
+        cachedVouchers = await api("/api/admin/vouchers");
+        renderVouchers();
+      } catch (error) {
+        $("voucherRows").innerHTML =
+          '<tr><td colspan="7" class="empty">Gagal memuat voucher.</td></tr>';
+        $("voucherPackageSummary").textContent = "Data voucher belum tersedia.";
+        throw error;
+      }
+    }
+
+
+$("voucherRows").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-voucher]");
+  if (!button) return;
+
+  const voucherId = button.dataset.deleteVoucher;
+
+  const confirmed = window.confirm(
+    "Hapus voucher stok ini dari database dan MikroTik jika ditemukan? Tindakan ini tidak bisa dibatalkan."
+  );
+
+  if (!confirmed) return;
+
+  button.disabled = true;
+  showMessage("voucherMessage", "Menghapus voucher...");
+
+  try {
+    const result = await api(
+      `/api/admin/vouchers/${encodeURIComponent(voucherId)}`,
+      { method: "DELETE" }
+    );
+
+    showMessage(
+      "voucherMessage",
+      result.message || "Voucher berhasil dihapus."
+    );
+
+    await loadVouchers();
+  } catch (error) {
+    showMessage(
+      "voucherMessage",
+      error.message || "Gagal menghapus voucher.",
+      "error"
+    );
+
+    button.disabled = false;
+  }
+});
+
+
+    $("voucherPackageTabs").addEventListener("click", (event) => {
+      const tab = event.target.closest("[data-package-code]");
+      if (!tab) return;
+
+      voucherPackageFilter = tab.dataset.packageCode;
+      renderVouchers();
+    });
+
+    $("voucherSearchInput").addEventListener("input", () => {
+  renderVouchers();
+});
+
+$("clearVoucherSearchButton").addEventListener("click", () => {
+  $("voucherSearchInput").value = "";
+  renderVouchers();
+  $("voucherSearchInput").focus();
+});
+
+
+    
+function renderOrderRow(order, compact = false) {
+  const paymentStatuses = [...new Set(
+    (order.payments || []).map((payment) => payment.status).filter(Boolean)
+  )];
+  const paymentLabel = paymentStatuses.join(", ") || "Belum ada pembayaran";
+
+  const canConfirm =
+    order.status === "PENDING" &&
+    paymentStatuses.includes("PENDING");
+
+  if (compact) {
+    return `<tr>
+      <td>${escapeHtml(order.orderNumber)}</td>
+      <td>${escapeHtml(order.package?.name || order.package?.code || "—")}</td>
+      <td>${escapeHtml(rupiah(order.amount))}</td>
+      <td>${statusBadge(order.status)}</td>
+    </tr>`;
+  }
+
+  const action = canConfirm
+    ? `<button class="secondary" type="button"
+         data-confirm-payment="${escapeHtml(order.id)}"
+         data-order-number="${escapeHtml(order.orderNumber)}">
+         Konfirmasi Pembayaran
+       </button>`
+    : "—";
+
+  return `<tr>
+    <td>${escapeHtml(order.orderNumber)}</td>
+    <td>${escapeHtml(order.package?.name || order.package?.code || "—")}</td>
+    <td>${escapeHtml(rupiah(order.amount))}</td>
+    <td>${statusBadge(order.status)}</td>
+    <td>${statusBadge(paymentLabel)}</td>
+    <td>${escapeHtml(dateLabel(order.createdAt))}</td>
+    <td>${action}</td>
+  </tr>`;
+}
+
+
+    async function loadOrders(compact = false) {
+      const result = await api("/api/admin/orders");
+      const orders = result.orders || [];
+
+      if (compact) {
+        $("recentOrderRows").innerHTML = orders.length
+          ? orders.slice(0, 5).map((order) => renderOrderRow(order, true)).join("")
+          : '<tr><td colspan="4" class="empty">Belum ada order.</td></tr>';
+      } else {
+        $("orderRows").innerHTML = orders.length
+          ? orders.map((order) => renderOrderRow(order)).join("")
+          : '<tr><td colspan="7" class="empty">Belum ada order.</td></tr>';
+      }
+    }
+
+    async function loadView(view, force = false) {
+      if (!force && loadedViews.has(view)) return;
+
+      try {
+        if (view === "overview") {
+  await Promise.all([
+    loadStats(),
+    loadOrders(true),
+    loadPackages()
+  ]);
+} else if (view === "vouchers") {
+          await loadVouchers();
+        } else if (view === "orders") {
+          await loadOrders(false);
+        } else if (view === "packages") {
+          await loadPackages();
+        }
+
+        loadedViews.add(view);
+      } catch (error) {
+        const target = {
+          overview: "revenueValue",
+          vouchers: "voucherMessage",
+          orders: "ordersMessage",
+          packages: "generateMessage"
+        }[view];
+
+        if (view === "overview") {
+          $("revenueValue").textContent = "—";
+          showMessage("loginMessage", error.message, "error");
+        } else {
+          showMessage(target, error.message, "error");
+        }
+      }
+    }
+
+    function showView(view, force = false) {
+      currentView = view;
+
+      document.querySelectorAll("[data-view]").forEach((button) => {
+        button.classList.toggle("active", button.dataset.view === view);
+      });
+
+      ["overview", "vouchers", "orders", "packages"].forEach((name) => {
+        $(`view-${name}`).classList.toggle("hidden", name !== view);
+      });
+
+      loadView(view, force);
+    }
+
+    document.querySelectorAll("[data-view]").forEach((button) => {
+      button.addEventListener("click", () => showView(button.dataset.view));
+    });
+
+    document.querySelectorAll("[data-go]").forEach((button) => {
+      button.addEventListener("click", () => showView(button.dataset.go));
+    });
+
+    $("loginForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("loginButton").disabled = true;
+
+      try {
+        await api("/api/admin/login", {
+          method: "POST",
+          body: JSON.stringify({ password: $("adminPassword").value })
+        });
+
+        $("adminPassword").value = "";
+        showMessage("loginMessage", "");
+        loadedViews.clear();
+        setLoggedIn(true);
+        showView("overview", true);
+      } catch (error) {
+        showMessage("loginMessage", error.message, "error");
+      } finally {
+        $("loginButton").disabled = false;
+      }
+    });
+
+    $("generateForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      $("generateButton").disabled = true;
+
+      try {
+        const result = await api("/api/admin/vouchers/generate", {
+          method: "POST",
+          body: JSON.stringify({
+            packageCode: $("packageSelect").value,
+            quantity: Number($("quantity").value)
+          })
+        });
+
+        showMessage(
+          "generateMessage",
+          `${result.message || "Voucher berhasil dibuat"}. Paket ${result.package}; jumlah ${result.quantity}.`,
+          "success"
+        );
+
+        loadedViews.delete("vouchers");
+        loadedViews.delete("overview");
+        await loadStats();
+      } catch (error) {
+        showMessage("generateMessage", error.message, "error");
+      } finally {
+        $("generateButton").disabled = false;
+      }
+    });
+
+    $("refreshStatsButton").addEventListener("click", () => {
+      loadedViews.delete("overview");
+      showView("overview", true);
+    });
+
+    $("refreshVouchersButton").addEventListener("click", () => {
+      loadedViews.delete("vouchers");
+      loadView("vouchers", true);
+    });
+
+ $("refreshOrdersButton").addEventListener("click", () => {
+  loadedViews.delete("orders");
+  loadView("orders", true);
+}); 
+    
+$("orderRows").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-confirm-payment]");
+  if (!button) return;
+
+  const orderId = button.dataset.confirmPayment;
+  const orderNumber = button.dataset.orderNumber;
+
+  const confirmed = window.confirm(
+    `Konfirmasi pembayaran ${orderNumber}?\n\n` +
+    "Pastikan dana benar-benar sudah masuk. " +
+    "Tindakan ini dapat mengaktifkan voucher di MikroTik."
+  );
+
+  if (!confirmed) return;
+
+  const reference = window.prompt(
+    "Referensi pembayaran (opsional):",
+    ""
+  );
+
+  if (reference === null) return;
+
+  button.disabled = true;
+  $("ordersMessage").textContent = "Memproses konfirmasi pembayaran...";
+
+  try {
+    const result = await api(
+      `/api/admin/orders/${encodeURIComponent(orderId)}/confirm-payment`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reference })
+      }
+    );
+
+    $("ordersMessage").textContent =
+      `${result.message} Nomor order: ${result.orderNumber}.`;
+
+    loadedViews.delete("overview");
+
+    await Promise.all([
+      loadOrders(false),
+      loadStats()
+    ]);
+  } catch (error) {
+    $("ordersMessage").textContent = error.message;
+    button.disabled = false;
+  }
+});
+
+
+    $("refreshPackagesButton").addEventListener("click", () => {
+      loadedViews.delete("packages");
+      loadView("packages", true);
+    });
+
+    $("logoutButton").addEventListener("click", async () => {
+      try {
+        await api("/api/admin/logout", { method: "POST" });
+      } catch (error) {
+        console.error(error);
+      }
+
+      loadedViews.clear();
+      setLoggedIn(false);
+    });
+
+    async function init() {
+      await checkHealth();
+
+      try {
+        await api("/api/admin/session");
+        setLoggedIn(true);
+        showView("overview", true);
+      } catch {
+        setLoggedIn(false);
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

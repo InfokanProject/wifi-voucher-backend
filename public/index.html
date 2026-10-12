@@ -381,15 +381,22 @@
             <button class="secondary" data-go="orders" type="button">Semua order</button>
           </div>
           <div class="table-wrap">
-            <table>
-              <thead>
-                <tr><th>Nomor</th><th>Paket</th><th>Nominal</th><th>Status</th></tr>
-              </thead>
-              <tbody id="recentOrderRows">
-                <tr><td colspan="4" class="empty">Buka ringkasan untuk memuat data.</td></tr>
-              </tbody>
-            </table>
-          </div>
+  <table>
+    <thead>
+      <tr>
+        <th>Nomor</th>
+        <th>Paket</th>
+        <th>Nominal</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody id="recentOrderRows">
+      <tr>
+        <td colspan="4" class="empty">Memuat order terbaru...</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
         </div>
       </section>
 
@@ -657,18 +664,31 @@ const filtered = cachedVouchers.filter((voucher) => {
     })[voucherPackageFilter]
   } (dari maksimal 100 voucher terbaru).`;
 
-      $("voucherRows").innerHTML = filtered.length
-        ? filtered.map((voucher) => `
-          <tr>
-            <td>${escapeHtml(voucher.code)}</td>
-            <td>${statusBadge(voucher.status)}</td>
-            <td>${escapeHtml(dateLabel(voucher.createdAt))}</td>
-            <td>${escapeHtml(dateLabel(voucher.activatedAt))}</td>
-            <td>${escapeHtml(dateLabel(voucher.expiresAt))}</td>
-            <td>${escapeHtml(voucher.order?.orderNumber || "—")}</td>
-          </tr>
-        `).join("")
-        : '<tr><td colspan="6" class="empty">Belum ada voucher untuk paket ini.</td></tr>';
+      
+$("voucherRows").innerHTML = filtered.length
+  ? filtered.map((voucher) => `
+      <tr>
+        <td>${escapeHtml(voucher.code)}</td>
+        <td>${statusBadge(voucher.status)}</td>
+        <td>${escapeHtml(dateLabel(voucher.createdAt))}</td>
+        <td>${escapeHtml(dateLabel(voucher.activatedAt))}</td>
+        <td>${escapeHtml(dateLabel(voucher.expiresAt))}</td>
+        <td>${escapeHtml(voucher.order?.orderNumber || "—")}</td>
+        <td>
+          ${
+            voucher.status === "STOCK" && !voucher.order
+              ? `<button
+                   type="button"
+                   class="danger"
+                   data-delete-voucher="${escapeHtml(voucher.id)}"
+                 >Hapus</button>`
+              : '<span class="muted">—</span>'
+          }
+        </td>
+      </tr>
+    `).join("")
+  : '<tr><td colspan="7" class="empty">Belum ada voucher untuk paket ini.</td></tr>';
+
 
       document.querySelectorAll("#voucherPackageTabs .voucher-tab").forEach((tab) => {
         const active = tab.dataset.packageCode === voucherPackageFilter;
@@ -686,11 +706,51 @@ const filtered = cachedVouchers.filter((voucher) => {
         renderVouchers();
       } catch (error) {
         $("voucherRows").innerHTML =
-          '<tr><td colspan="6" class="empty">Gagal memuat voucher.</td></tr>';
+          '<tr><td colspan="7" class="empty">Gagal memuat voucher.</td></tr>';
         $("voucherPackageSummary").textContent = "Data voucher belum tersedia.";
         throw error;
       }
     }
+
+
+$("voucherRows").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-delete-voucher]");
+  if (!button) return;
+
+  const voucherId = button.dataset.deleteVoucher;
+
+  const confirmed = window.confirm(
+    "Hapus voucher stok ini dari database dan MikroTik jika ditemukan? Tindakan ini tidak bisa dibatalkan."
+  );
+
+  if (!confirmed) return;
+
+  button.disabled = true;
+  showMessage("voucherMessage", "Menghapus voucher...");
+
+  try {
+    const result = await api(
+      `/api/admin/vouchers/${encodeURIComponent(voucherId)}`,
+      { method: "DELETE" }
+    );
+
+    showMessage(
+      "voucherMessage",
+      result.message || "Voucher berhasil dihapus."
+    );
+
+    await loadVouchers();
+  } catch (error) {
+    showMessage(
+      "voucherMessage",
+      error.message || "Gagal menghapus voucher.",
+      "error"
+    );
+
+    button.disabled = false;
+  }
+});
+
 
     $("voucherPackageTabs").addEventListener("click", (event) => {
       const tab = event.target.closest("[data-package-code]");
