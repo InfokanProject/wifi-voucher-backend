@@ -1,3 +1,4 @@
+
 import { FastifyInstance } from "fastify";
 import { prisma } from "../../lib/prisma";
 import { generateVoucherCode } from "../../utils/voucher-generator";
@@ -83,18 +84,24 @@ export async function voucherRoutes(app: FastifyInstance) {
       select: {
         id: true,
         code: true,
-        username: true,
         status: true,
         createdAt: true,
-activatedAt: true,
-expiresAt: true,
-expiredAt: true,
-package: {
+        activatedAt: true,
+        expiresAt: true,
+        expiredAt: true,
+        package: {
           select: {
             code: true,
             name: true,
             price: true,
             durationMinutes: true
+          }
+        },
+        order: {
+          select: {
+            orderNumber: true,
+            status: true,
+            createdAt: true
           }
         }
       },

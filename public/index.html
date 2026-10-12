@@ -151,6 +151,38 @@
       vertical-align: top;
     }
 
+    
+    .voucher-tabs {
+      display: flex;
+      gap: 8px;
+      overflow-x: auto;
+      padding: 4px 0 12px;
+      margin-bottom: 8px;
+    }
+
+    .voucher-tab {
+      flex: 0 0 auto;
+      padding: 9px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .voucher-tab.active {
+      background: var(--primary);
+      color: white;
+      border-color: var(--primary);
+    }
+
+    .voucher-tab:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+
     th {
       position: sticky;
       top: 0;
@@ -346,26 +378,48 @@
         </div>
       </section>
 
+      
       <section id="view-vouchers" class="section panel hidden">
         <div class="toolbar">
           <div>
-            <h2>Voucher terbaru</h2>
-            <p class="muted small">Maksimal 100 voucher.</p>
+            <h2>Voucher</h2>
+            <p class="muted small">Maksimal 100 voucher terbaru, dipisahkan berdasarkan paket.</p>
           </div>
           <button id="refreshVouchersButton" class="secondary" type="button">↻</button>
         </div>
+
         <div id="voucherMessage" aria-live="polite"></div>
+
+        <div id="voucherPackageTabs" class="voucher-tabs" role="tablist" aria-label="Filter paket voucher">
+          <button class="voucher-tab active" type="button" data-package-code="12J" role="tab" aria-selected="true">12 Jam</button>
+          <button class="voucher-tab" type="button" data-package-code="1H" role="tab" aria-selected="false">1 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="3H" role="tab" aria-selected="false">3 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="7H" role="tab" aria-selected="false">7 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="14H" role="tab" aria-selected="false">14 Hari</button>
+          <button class="voucher-tab" type="button" data-package-code="30H" role="tab" aria-selected="false">30 Hari</button>
+        </div>
+
+        <p id="voucherPackageSummary" class="muted small">Memuat voucher...</p>
+
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Kode</th><th>Paket</th><th>Status</th><th>Dibuat</th></tr>
+              <tr>
+                <th>Kode</th>
+                <th>Status</th>
+                <th>Dibuat</th>
+                <th>Aktivasi</th>
+                <th>Kedaluwarsa</th>
+                <th>Order terkait</th>
+              </tr>
             </thead>
             <tbody id="voucherRows">
-              <tr><td colspan="4" class="empty">Pilih menu Voucher untuk memuat data.</td></tr>
+              <tr><td colspan="6" class="empty">Pilih menu Voucher untuk memuat data.</td></tr>
             </tbody>
           </table>
         </div>
       </section>
+
 
       <section id="view-orders" class="section panel hidden">
         <div class="toolbar">
@@ -547,21 +601,71 @@
       `).join("");
     }
 
-    async function loadVouchers() {
-      showMessage("voucherMessage", "");
-      const vouchers = await api("/api/admin/vouchers");
+    
+    let voucherPackageFilter = "12J";
+    let cachedVouchers = [];
 
-      $("voucherRows").innerHTML = vouchers.length
-        ? vouchers.map((voucher) => `
+    function renderVouchers() {
+      const filtered = cachedVouchers.filter(
+        (voucher) => voucher.package?.code === voucherPackageFilter
+      );
+
+      $("voucherPackageSummary").textContent =
+        `${filtered.length} voucher paket ${
+          filtered[0]?.package?.name ||
+          ({
+            "12J": "12 Jam",
+            "1H": "1 Hari",
+            "3H": "3 Hari",
+            "7H": "7 Hari",
+            "14H": "14 Hari",
+            "30H": "30 Hari"
+          })[voucherPackageFilter]
+        } (dari maksimal 100 voucher terbaru).`;
+
+      $("voucherRows").innerHTML = filtered.length
+        ? filtered.map((voucher) => `
           <tr>
             <td>${escapeHtml(voucher.code)}</td>
-            <td>${escapeHtml(voucher.package?.name || voucher.package?.code || "—")}</td>
             <td>${statusBadge(voucher.status)}</td>
             <td>${escapeHtml(dateLabel(voucher.createdAt))}</td>
+            <td>${escapeHtml(dateLabel(voucher.activatedAt))}</td>
+            <td>${escapeHtml(dateLabel(voucher.expiresAt))}</td>
+            <td>${escapeHtml(voucher.order?.orderNumber || "—")}</td>
           </tr>
         `).join("")
-        : '<tr><td colspan="4" class="empty">Belum ada voucher.</td></tr>';
+        : '<tr><td colspan="6" class="empty">Belum ada voucher untuk paket ini.</td></tr>';
+
+      document.querySelectorAll("#voucherPackageTabs .voucher-tab").forEach((tab) => {
+        const active = tab.dataset.packageCode === voucherPackageFilter;
+        tab.classList.toggle("active", active);
+        tab.setAttribute("aria-selected", String(active));
+      });
     }
+
+    async function loadVouchers() {
+      showMessage("voucherMessage", "");
+      $("voucherPackageSummary").textContent = "Memuat voucher...";
+
+      try {
+        cachedVouchers = await api("/api/admin/vouchers");
+        renderVouchers();
+      } catch (error) {
+        $("voucherRows").innerHTML =
+          '<tr><td colspan="6" class="empty">Gagal memuat voucher.</td></tr>';
+        $("voucherPackageSummary").textContent = "Data voucher belum tersedia.";
+        throw error;
+      }
+    }
+
+    $("voucherPackageTabs").addEventListener("click", (event) => {
+      const tab = event.target.closest("[data-package-code]");
+      if (!tab) return;
+
+      voucherPackageFilter = tab.dataset.packageCode;
+      renderVouchers();
+    });
+
 
     
 function renderOrderRow(order, compact = false) {
