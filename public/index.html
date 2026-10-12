@@ -250,6 +250,21 @@
       .table-wrap { max-height: 60vh; }
     }
 
+      .voucher-search {
+      display: flex;
+      gap: 8px;
+      margin: 8px 0 14px;
+    }
+
+    .voucher-search input {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .voucher-search button {
+      flex-shrink: 0;
+    }
+
     @media (max-width: 390px) {
       h1 { font-size: 22px; }
       .brand { font-size: 15px; }
@@ -400,6 +415,18 @@
         </div>
 
         <p id="voucherPackageSummary" class="muted small">Memuat voucher...</p>
+        <div class="voucher-search">
+  <input
+    id="voucherSearchInput"
+    type="search"
+    placeholder="Cari kode voucher..."
+    aria-label="Cari kode voucher"
+    autocomplete="off"
+  />
+  <button id="clearVoucherSearchButton" class="secondary" type="button">
+    Hapus
+  </button>
+</div>
 
         <div class="table-wrap">
           <table>
@@ -606,22 +633,29 @@
     let cachedVouchers = [];
 
     function renderVouchers() {
-      const filtered = cachedVouchers.filter(
-        (voucher) => voucher.package?.code === voucherPackageFilter
-      );
+      const searchTerm = $("voucherSearchInput").value.trim().toUpperCase();
+
+const filtered = cachedVouchers.filter((voucher) => {
+  const matchesPackage =
+    voucher.package?.code === voucherPackageFilter;
+
+  const matchesCode =
+    (voucher.code || "").toUpperCase().includes(searchTerm);
+
+  return matchesPackage && matchesCode;
+});
 
       $("voucherPackageSummary").textContent =
-        `${filtered.length} voucher paket ${
-          filtered[0]?.package?.name ||
-          ({
-            "12J": "12 Jam",
-            "1H": "1 Hari",
-            "3H": "3 Hari",
-            "7H": "7 Hari",
-            "14H": "14 Hari",
-            "30H": "30 Hari"
-          })[voucherPackageFilter]
-        } (dari maksimal 100 voucher terbaru).`;
+  `${filtered.length} voucher ditemukan pada paket ${
+    ({
+      "12J": "12 Jam",
+      "1H": "1 Hari",
+      "3H": "3 Hari",
+      "7H": "7 Hari",
+      "14H": "14 Hari",
+      "30H": "30 Hari"
+    })[voucherPackageFilter]
+  } (dari maksimal 100 voucher terbaru).`;
 
       $("voucherRows").innerHTML = filtered.length
         ? filtered.map((voucher) => `
@@ -665,6 +699,16 @@
       voucherPackageFilter = tab.dataset.packageCode;
       renderVouchers();
     });
+
+    $("voucherSearchInput").addEventListener("input", () => {
+  renderVouchers();
+});
+
+$("clearVoucherSearchButton").addEventListener("click", () => {
+  $("voucherSearchInput").value = "";
+  renderVouchers();
+  $("voucherSearchInput").focus();
+});
 
 
     
