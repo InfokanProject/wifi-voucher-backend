@@ -320,12 +320,21 @@ export async function orderRoutes(app: FastifyInstance) {
           paidAt: true,
           fulfilledAt: true,
           createdAt: true,
-          package: {
+                    package: {
             select: {
               code: true,
               name: true,
               durationMinutes: true,
               speedMbps: true,
+            },
+          },
+          voucher: {
+            select: {
+              code: true,
+              username: true,
+              status: true,
+              activatedAt: true,
+              expiresAt: true,
             },
           },
           payments: {
@@ -345,7 +354,12 @@ export async function orderRoutes(app: FastifyInstance) {
         });
       }
 
-      return reply.send(order);
+      const { voucher, ...safeOrder } = order;
+
+      return reply.send({
+        ...safeOrder,
+        voucher: order.status === "FULFILLED" ? voucher : null,
+      });
     }
   );
 }

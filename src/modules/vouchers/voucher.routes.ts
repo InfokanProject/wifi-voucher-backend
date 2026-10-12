@@ -86,7 +86,10 @@ export async function voucherRoutes(app: FastifyInstance) {
         username: true,
         status: true,
         createdAt: true,
-        package: {
+activatedAt: true,
+expiresAt: true,
+expiredAt: true,
+package: {
           select: {
             code: true,
             name: true,

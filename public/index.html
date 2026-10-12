@@ -314,11 +314,11 @@
           </div>
           <div class="row" style="justify-content:space-between;flex-wrap:wrap;padding:5px 0">
             <span class="muted">Voucher direservasi</span>
-            <strong id="reservedValue">—</strong>
+            <strong id="systemReservedValue">—</strong>
           </div>
           <div class="row" style="justify-content:space-between;flex-wrap:wrap;padding:5px 0">
             <span class="muted">Voucher aktif</span>
-            <strong id="activeValue">—</strong>
+            <strong id="systemActiveValue">—</strong>
           </div>
           <div class="row" style="justify-content:space-between;flex-wrap:wrap;padding:5px 0">
             <span class="muted">Paket aktif</span>
@@ -379,7 +379,9 @@
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Nomor</th><th>Paket</th><th>Nominal</th><th>Order</th><th>Bayar</th><th>Dibuat</th></tr>
+              
+<tr><th>Nomor</th><th>Paket</th><th>Nominal</th><th>Order</th><th>Bayar</th><th>Dibuat</th><th>Aksi</th></tr>
+
             </thead>
             <tbody id="orderRows">
               <tr><td colspan="6" class="empty">Pilih menu Order untuk memuat data.</td></tr>
@@ -518,6 +520,8 @@
       $("revenueValue").textContent = rupiah(stats.revenuePaid);
       $("reservedValue").textContent = stats.voucherReserved ?? 0;
       $("activeValue").textContent = stats.voucherActivated ?? 0;
+      $("systemReservedValue").textContent = stats.voucherReserved ?? 0;
+      $("systemActiveValue").textContent = stats.voucherActivated ?? 0;
       $("fulfilledValue").textContent = stats.ordersFulfilled ?? 0;
       await checkHealth();
     }
@@ -559,30 +563,45 @@
         : '<tr><td colspan="4" class="empty">Belum ada voucher.</td></tr>';
     }
 
-    function renderOrderRow(order, compact = false) {
-      const paymentStatuses = [...new Set(
-        (order.payments || []).map((payment) => payment.status).filter(Boolean)
-      )];
-      const paymentLabel = paymentStatuses.join(", ") || "Belum ada pembayaran";
+    
+function renderOrderRow(order, compact = false) {
+  const paymentStatuses = [...new Set(
+    (order.payments || []).map((payment) => payment.status).filter(Boolean)
+  )];
+  const paymentLabel = paymentStatuses.join(", ") || "Belum ada pembayaran";
 
-      if (compact) {
-        return `<tr>
-          <td>${escapeHtml(order.orderNumber)}</td>
-          <td>${escapeHtml(order.package?.name || order.package?.code || "—")}</td>
-          <td>${escapeHtml(rupiah(order.amount))}</td>
-          <td>${statusBadge(order.status)}</td>
-        </tr>`;
-      }
+  const canConfirm =
+    order.status === "PENDING" &&
+    paymentStatuses.includes("PENDING");
 
-      return `<tr>
-        <td>${escapeHtml(order.orderNumber)}</td>
-        <td>${escapeHtml(order.package?.name || order.package?.code || "—")}</td>
-        <td>${escapeHtml(rupiah(order.amount))}</td>
-        <td>${statusBadge(order.status)}</td>
-        <td>${statusBadge(paymentLabel)}</td>
-        <td>${escapeHtml(dateLabel(order.createdAt))}</td>
-      </tr>`;
-    }
+  if (compact) {
+    return `<tr>
+      <td>${escapeHtml(order.orderNumber)}</td>
+      <td>${escapeHtml(order.package?.name || order.package?.code || "—")}</td>
+      <td>${escapeHtml(rupiah(order.amount))}</td>
+      <td>${statusBadge(order.status)}</td>
+    </tr>`;
+  }
+
+  const action = canConfirm
+    ? `<button class="secondary" type="button"
+         data-confirm-payment="${escapeHtml(order.id)}"
+         data-order-number="${escapeHtml(order.orderNumber)}">
+         Konfirmasi Pembayaran
+       </button>`
+    : "—";
+
+  return `<tr>
+    <td>${escapeHtml(order.orderNumber)}</td>
+    <td>${escapeHtml(order.package?.name || order.package?.code || "—")}</td>
+    <td>${escapeHtml(rupiah(order.amount))}</td>
+    <td>${statusBadge(order.status)}</td>
+    <td>${statusBadge(paymentLabel)}</td>
+    <td>${escapeHtml(dateLabel(order.createdAt))}</td>
+    <td>${action}</td>
+  </tr>`;
+}
+
 
     async function loadOrders(compact = false) {
       const result = await api("/api/admin/orders");
@@ -595,7 +614,7 @@
       } else {
         $("orderRows").innerHTML = orders.length
           ? orders.map((order) => renderOrderRow(order)).join("")
-          : '<tr><td colspan="6" class="empty">Belum ada order.</td></tr>';
+          : '<tr><td colspan="7" class="empty">Belum ada order.</td></tr>';
       }
     }
 
@@ -604,8 +623,12 @@
 
       try {
         if (view === "overview") {
-          await Promise.all([loadStats(), loadOrders(true)]);
-        } else if (view === "vouchers") {
+  await Promise.all([
+    loadStats(),
+    loadOrders(true),
+    loadPackages()
+  ]);
+} else if (view === "vouchers") {
           await loadVouchers();
         } else if (view === "orders") {
           await loadOrders(false);
@@ -714,10 +737,60 @@
       loadView("vouchers", true);
     });
 
-    $("refreshOrdersButton").addEventListener("click", () => {
-      loadedViews.delete("orders");
-      loadView("orders", true);
-    });
+ $("refreshOrdersButton").addEventListener("click", () => {
+  loadedViews.delete("orders");
+  loadView("orders", true);
+}); 
+    
+$("orderRows").addEventListener("click", async (event) => {
+  const button = event.target.closest("[data-confirm-payment]");
+  if (!button) return;
+
+  const orderId = button.dataset.confirmPayment;
+  const orderNumber = button.dataset.orderNumber;
+
+  const confirmed = window.confirm(
+    `Konfirmasi pembayaran ${orderNumber}?\n\n` +
+    "Pastikan dana benar-benar sudah masuk. " +
+    "Tindakan ini dapat mengaktifkan voucher di MikroTik."
+  );
+
+  if (!confirmed) return;
+
+  const reference = window.prompt(
+    "Referensi pembayaran (opsional):",
+    ""
+  );
+
+  if (reference === null) return;
+
+  button.disabled = true;
+  $("ordersMessage").textContent = "Memproses konfirmasi pembayaran...";
+
+  try {
+    const result = await api(
+      `/api/admin/orders/${encodeURIComponent(orderId)}/confirm-payment`,
+      {
+        method: "POST",
+        body: JSON.stringify({ reference })
+      }
+    );
+
+    $("ordersMessage").textContent =
+      `${result.message} Nomor order: ${result.orderNumber}.`;
+
+    loadedViews.delete("overview");
+
+    await Promise.all([
+      loadOrders(false),
+      loadStats()
+    ]);
+  } catch (error) {
+    $("ordersMessage").textContent = error.message;
+    button.disabled = false;
+  }
+});
+
 
     $("refreshPackagesButton").addEventListener("click", () => {
       loadedViews.delete("packages");

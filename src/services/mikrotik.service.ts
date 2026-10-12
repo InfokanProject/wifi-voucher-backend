@@ -1,7 +1,23 @@
+
 import { RouterOSAPI } from "routeros-client";
 import { env } from "../config/env";
 
-export function createMikrotikClient() {
+type SimulatedUser = {
+  name: string;
+  password: string;
+  profile: string;
+  comment: string;
+};
+
+const simulatedUsers = new Map<string, SimulatedUser>();
+
+function createMikrotikClient() {
+  if (env.MIKROTIK_MODE !== "real") {
+    throw new Error(
+      "Koneksi RouterOS dilarang saat MIKROTIK_MODE=simulator."
+    );
+  }
+
   return new RouterOSAPI({
     host: env.MIKROTIK_HOST,
     user: env.MIKROTIK_USERNAME,
@@ -11,29 +27,35 @@ export function createMikrotikClient() {
 }
 
 export async function getMikrotikUsers() {
+  if (env.MIKROTIK_MODE === "simulator") {
+    return Array.from(simulatedUsers.values()).map((user) => ({
+      ...user,
+    }));
+  }
+
   const api = createMikrotikClient();
 
   try {
     await api.connect();
-
-    const users = await api.write("/ip/hotspot/user/print");
-
-    return users;
+    return await api.write("/ip/hotspot/user/print");
   } finally {
     await api.close();
   }
 }
 
 export async function getMikrotikUser(username: string) {
+  if (env.MIKROTIK_MODE === "simulator") {
+    const user = simulatedUsers.get(username);
+    return user ? { ...user } : null;
+  }
+
   const api = createMikrotikClient();
 
   try {
     await api.connect();
-
     const users = await api.write("/ip/hotspot/user/print", [
       `?name=${username}`,
     ]);
-
     return users[0] ?? null;
   } finally {
     await api.close();
@@ -49,20 +71,46 @@ export async function createMikrotikUser({
   password: string;
   profile: string;
 }) {
+  if (env.MIKROTIK_MODE === "simulator") {
+    const existing = simulatedUsers.get(username);
+
+    if (existing) {
+      if (
+        existing.password !== password ||
+        existing.profile !== profile
+      ) {
+        throw new Error(
+          "SIMULATOR_USER_EXISTS_WITH_DIFFERENT_CREDENTIALS"
+        );
+      }
+
+      return { created: false, user: { ...existing } };
+    }
+
+    const user: SimulatedUser = {
+      name: username,
+      password,
+      profile,
+      comment: "NEW",
+    };
+
+    simulatedUsers.set(username, user);
+
+    return { created: true, user: { ...user } };
+  }
+
   const api = createMikrotikClient();
 
   try {
     await api.connect();
 
-    const existingUsers = await api.write("/ip/hotspot/user/print", [
-      `?name=${username}`,
-    ]);
+    const existingUsers = await api.write(
+      "/ip/hotspot/user/print",
+      [`?name=${username}`]
+    );
 
     if (existingUsers.length > 0) {
-      return {
-        created: false,
-        user: existingUsers[0],
-      };
+      return { created: false, user: existingUsers[0] };
     }
 
     await api.write("/ip/hotspot/user/add", [
@@ -72,15 +120,58 @@ export async function createMikrotikUser({
       "=comment=NEW",
     ]);
 
-    const createdUser = await api.write("/ip/hotspot/user/print", [
-      `?name=${username}`,
-    ]);
+    const createdUsers = await api.write(
+      "/ip/hotspot/user/print",
+      [`?name=${username}`]
+    );
 
     return {
       created: true,
-      user: createdUser[0] ?? null,
+      user: createdUsers[0] ?? null,
     };
   } finally {
     await api.close();
   }
+}
+
+function formatSimulatedActivationTime(date: Date): string {
+  const jakartaTime = new Date(date.getTime() + 7 * 60 * 60 * 1000);
+
+  const months = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+  ];
+
+  const pad = (value: number) => String(value).padStart(2, "0");
+
+  return (
+    `ACTIVATED ${months[jakartaTime.getUTCMonth()]}/` +
+    `${pad(jakartaTime.getUTCDate())}/` +
+    `${jakartaTime.getUTCFullYear()} ` +
+    `${pad(jakartaTime.getUTCHours())}:` +
+    `${pad(jakartaTime.getUTCMinutes())}:` +
+    `${pad(jakartaTime.getUTCSeconds())}`
+  );
+}
+
+export async function simulateMikrotikActivation(
+  username: string,
+  activatedAt = new Date()
+) {
+  if (env.MIKROTIK_MODE !== "simulator") {
+    throw new Error(
+      "Simulasi aktivasi hanya boleh berjalan pada mode simulator."
+    );
+  }
+
+  const user = simulatedUsers.get(username);
+
+  if (!user) {
+    throw new Error("SIMULATED_USER_NOT_FOUND");
+  }
+
+  user.comment = formatSimulatedActivationTime(activatedAt);
+  simulatedUsers.set(username, user);
+
+  return { ...user };
 }

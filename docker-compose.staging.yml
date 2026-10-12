@@ -1,0 +1,17 @@
+
+services:
+  postgres-staging:
+    image: postgres:16-alpine
+    container_name: wifi-voucher-postgres-staging
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wifi_voucher_staging
+      POSTGRES_USER: wifi_staging
+      POSTGRES_PASSWORD: ${STAGING_DB_PASSWORD:?STAGING_DB_PASSWORD wajib diisi}
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - postgres_staging_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_staging_data:
