@@ -279,6 +279,14 @@
       <h2>Pesanan berhasil dibuat</h2>
       <p id="orderDetails"></p>
       <p id="paymentDetails"></p>
+            <div id="voucherDetails" class="hidden">
+        <p><strong>Kode voucher WiFi</strong></p>
+        <p id="voucherCodeText"></p>
+        <button id="copyVoucherButton" class="submit" type="button">
+          Salin Kode Voucher
+        </button>
+        <p id="voucherStatusText" aria-live="polite"></p>
+      </div>
       <button id="continuePayment" class="submit hidden">
         Lanjutkan ke WhatsApp Owner
       </button>
@@ -300,6 +308,7 @@
     let selectedPackage = null;
     let currentOrder = null;
     let pendingOrderAttempt = null;
+    let orderPollInProgress = false;
 
     const packageContainer = document.getElementById("packages");
     const createButton = document.getElementById("createOrder");
@@ -307,6 +316,10 @@
     const orderResult = document.getElementById("orderResult");
     const orderDetails = document.getElementById("orderDetails");
     const paymentDetails = document.getElementById("paymentDetails");
+    const voucherDetails = document.getElementById("voucherDetails");
+const voucherCodeText = document.getElementById("voucherCodeText");
+const voucherStatusText = document.getElementById("voucherStatusText");
+const copyVoucherButton = document.getElementById("copyVoucherButton");
     const continueButton = document.getElementById("continuePayment");
 
     function showMessage(message) {
@@ -390,46 +403,133 @@
 
     
     function renderCurrentOrder(order) {
-      const status = order.status || "PENDING";
-      const heading = orderResult.querySelector("h2");
+  const status = order.status || "PENDING";
+  const heading = orderResult.querySelector("h2");
+  const voucher = order.voucher;
 
-      heading.textContent =
-        status === "FULFILLED" ? "Pesanan selesai" :
-        status === "EXPIRED" ? "Pesanan kedaluwarsa" :
-        status === "CANCELLED" ? "Pesanan dibatalkan" :
-        "Detail pesanan";
+  heading.textContent =
+    status === "FULFILLED" ? "Pesanan selesai" :
+    status === "EXPIRED" ? "Pesanan kedaluwarsa" :
+    status === "CANCELLED" ? "Pesanan dibatalkan" :
+    "Detail pesanan";
 
-      orderDetails.textContent =
-        `Nomor pesanan: ${order.orderNumber}. ` +
-        `Paket: ${order.packageName}. ` +
-        `Harga: ${formatRupiah(Number(order.price))}. ` +
-        `Status: ${status}.`;
+  orderDetails.textContent =
+    `Nomor pesanan: ${order.orderNumber}. ` +
+    `Paket: ${order.packageName}. ` +
+    `Harga: ${formatRupiah(Number(order.price))}. ` +
+    `Status: ${status}.`;
 
-      continueButton.classList.add("hidden");
+  continueButton.classList.add("hidden");
+  voucherDetails.classList.add("hidden");
 
-      if (status === "PENDING") {
-        if (order.paymentMethod === "QRIS") {
-          paymentDetails.textContent =
-            "QRIS otomatis belum tersedia. Hubungi WhatsApp Owner " +
-            "untuk instruksi pembayaran manual. Pesanan belum dianggap lunas.";
-        } else {
-          paymentDetails.textContent =
-            "Pesanan menunggu pembayaran dan verifikasi owner.";
-          continueButton.classList.remove("hidden");
-        }
-      } else if (status === "FULFILLED") {
-        paymentDetails.textContent =
-          "Pesanan sudah diproses. Ikuti informasi voucher dari owner.";
-      } else if (status === "EXPIRED") {
-        paymentDetails.textContent =
-          "Pesanan sudah kedaluwarsa. Buat pesanan baru jika masih ingin membeli.";
-      } else {
-        paymentDetails.textContent =
-          `Status pesanan saat ini: ${status}. Hubungi owner jika perlu bantuan.`;
-      }
-
-      orderResult.classList.remove("hidden");
+  if (status === "PENDING") {
+    if (order.paymentMethod === "QRIS") {
+      paymentDetails.textContent =
+        "QRIS otomatis belum tersedia. Hubungi WhatsApp Owner " +
+        "untuk instruksi pembayaran manual. Pesanan belum dianggap lunas.";
+    } else {
+      paymentDetails.textContent =
+        "Pesanan menunggu pembayaran dan verifikasi owner.";
+      continueButton.classList.remove("hidden");
     }
+  } else if (status === "FULFILLED") {
+    paymentDetails.textContent =
+      "Pembayaran sudah dikonfirmasi. Berikut informasi voucher kamu.";
+
+    if (voucher && voucher.code) {
+      voucherDetails.classList.remove("hidden");
+      voucherCodeText.textContent = voucher.code;
+
+      const voucherStatus = voucher.status || "SOLD";
+
+      if (voucherStatus === "ACTIVATED") {
+        voucherStatusText.textContent =
+          "Status voucher: AKTIF" +
+          (voucher.expiresAt
+            ? ` · Berlaku sampai ${new Date(voucher.expiresAt).toLocaleString("id-ID")}`
+            : "");
+      } else if (voucherStatus === "EXPIRED") {
+        voucherStatusText.textContent = "Status voucher: KEDALUWARSA.";
+      } else {
+        voucherStatusText.textContent =
+          "Status voucher: BELUM AKTIF. Hubungkan perangkat ke WiFi " +
+          "dan login menggunakan voucher untuk memulai masa berlaku.";
+      }
+    } else {
+      paymentDetails.textContent =
+        "Pembayaran sudah dikonfirmasi, tetapi data voucher belum tersedia. " +
+        "Silakan tunggu sebentar.";
+    }
+  } else if (status === "EXPIRED") {
+    paymentDetails.textContent =
+      "Pesanan sudah kedaluwarsa. Buat pesanan baru jika masih ingin membeli.";
+  } else if (status === "CANCELLED") {
+    paymentDetails.textContent = "Pesanan dibatalkan.";
+  } else {
+    paymentDetails.textContent =
+      `Status pesanan saat ini: ${status}. Hubungi owner jika perlu bantuan.`;
+  }
+
+  orderResult.classList.remove("hidden");
+}
+
+async function refreshOrderStatus() {
+  if (!currentOrder || orderPollInProgress) return;
+
+  const orderId = currentOrder.orderId || currentOrder.id;
+  if (!orderId) return;
+
+  orderPollInProgress = true;
+
+  try {
+    const response = await fetch(
+      `/api/orders/${encodeURIComponent(orderId)}`
+    );
+
+    if (!response.ok) return;
+
+    const data = await response.json();
+
+    currentOrder = {
+      ...currentOrder,
+      orderId: data.id,
+      orderNumber: data.orderNumber,
+      status: data.status,
+      amount: data.amount,
+      price: Number(data.amount),
+      packageName: data.package.name || data.package.code,
+      voucher: data.voucher,
+    };
+
+    renderCurrentOrder(currentOrder);
+
+    if (
+      data.status === "EXPIRED" ||
+      data.status === "CANCELLED" ||
+      (
+        data.status === "FULFILLED" &&
+        ["ACTIVATED", "EXPIRED"].includes(data.voucher?.status)
+      )
+    ) {
+      if (orderPollTimer) {
+        clearInterval(orderPollTimer);
+        orderPollTimer = null;
+      }
+    }
+  } catch (error) {
+    // Gangguan sementara tidak menghapus data pesanan di halaman.
+  } finally {
+    orderPollInProgress = false;
+  }
+}
+
+let orderPollTimer = null;
+
+function startOrderPolling() {
+  if (orderPollTimer) return;
+
+  orderPollTimer = setInterval(refreshOrderStatus, 5000);
+}
 
     async function restoreSavedOrder() {
       const savedOrderId = sessionStorage.getItem("wifiOrderId");
@@ -638,9 +738,24 @@
       );
     });
 
+    copyVoucherButton.addEventListener("click", async () => {
+  const code = voucherCodeText.textContent.trim();
+
+  if (!code) return;
+
+  try {
+    await navigator.clipboard.writeText(code);
+    copyVoucherButton.textContent = "Kode Berhasil Disalin!";
+  } catch (error) {
+    showMessage(
+      "Kode belum bisa disalin otomatis. Silakan salin kode voucher secara manual."
+    );
+  }
+});
     
     loadPackages();
     restoreSavedOrder();
+    startOrderPolling();
 
   </script>
 </body>
