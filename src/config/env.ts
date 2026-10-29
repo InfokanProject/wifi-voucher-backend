@@ -21,6 +21,15 @@ export const env = {
   MIKROTIK_USERNAME: process.env.MIKROTIK_USERNAME ?? "",
   MIKROTIK_PASSWORD: process.env.MIKROTIK_PASSWORD ?? "",
 
+    DUITKU_MODE: process.env.DUITKU_MODE ?? "sandbox",
+  DUITKU_MERCHANT_CODE: process.env.DUITKU_MERCHANT_CODE ?? "",
+  DUITKU_API_KEY: process.env.DUITKU_API_KEY ?? "",
+  DUITKU_BASE_URL:
+    process.env.DUITKU_BASE_URL ??
+    "https://api-sandbox.duitku.com/api/merchant/createInvoice",
+  DUITKU_CALLBACK_URL: process.env.DUITKU_CALLBACK_URL ?? "",
+  DUITKU_RETURN_URL: process.env.DUITKU_RETURN_URL ?? "",
+
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ?? "",
   SESSION_SECRET: process.env.SESSION_SECRET ?? "",
 };

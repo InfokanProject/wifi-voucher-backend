@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 
 import {
   createMikrotikUser,
@@ -11,7 +12,258 @@ import { FastifyInstance } from "fastify";
 import { prisma } from "../../lib/prisma";
 import { fulfillOrder } from "../../services/fulfillment.service";
 
+
+function verifyDuitkuSignature(
+  input: string,
+  signature: string,
+  apiKey: string,
+): boolean {
+  const expected = createHmac("sha256", apiKey)
+    .update(input)
+    .digest("hex");
+
+  const actualBuffer = Buffer.from(signature, "hex");
+  const expectedBuffer = Buffer.from(expected, "hex");
+
+  return (
+    actualBuffer.length === expectedBuffer.length &&
+    actualBuffer.length > 0 &&
+    timingSafeEqual(actualBuffer, expectedBuffer)
+  );
+}
+
+
 export async function paymentRoutes(app: FastifyInstance) {
+  
+  // Membuat invoice Duitku Sandbox untuk order yang sudah ada.
+  app.post<{
+    Params: { orderId: string };
+    Body: { email?: string };
+  }>("/api/payments/duitku/:orderId/create", async (request, reply) => {
+    if (
+      env.DUITKU_MODE !== "sandbox" ||
+      env.DUITKU_BASE_URL !==
+        "https://api-sandbox.duitku.com/api/merchant/createInvoice"
+    ) {
+      return reply.code(503).send({
+        error: "Endpoint ini khusus konfigurasi Duitku Sandbox.",
+      });
+    }
+
+    if (
+      !env.DUITKU_MERCHANT_CODE ||
+      !env.DUITKU_API_KEY ||
+      !env.DUITKU_CALLBACK_URL ||
+      !env.DUITKU_RETURN_URL
+    ) {
+      return reply.code(503).send({
+        error: "Konfigurasi Duitku belum lengkap.",
+      });
+    }
+
+    const email =
+      typeof request.body?.email === "string"
+        ? request.body.email.trim()
+        : "";
+
+    if (
+      email.length > 255 ||
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    ) {
+      return reply.code(400).send({
+        error: "Alamat email tidak valid.",
+      });
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: request.params.orderId },
+      include: {
+        package: true,
+        payments: true,
+      },
+    });
+
+    if (!order) {
+      return reply.code(404).send({
+        error: "Order tidak ditemukan.",
+      });
+    }
+
+    const now = new Date();
+
+    if (
+      order.status !== "PENDING" ||
+      !order.voucherId ||
+      (order.expiresAt !== null && order.expiresAt <= now)
+    ) {
+      return reply.code(409).send({
+        error: "Order tidak lagi bisa dibayar.",
+      });
+    }
+
+    const payment = order.payments.find(
+      (item) => item.status === "PENDING",
+    );
+
+    if (!payment || payment.amount !== order.amount) {
+      return reply.code(409).send({
+        error: "Payment pending tidak ditemukan atau nominal tidak cocok.",
+      });
+    }
+
+    // Request ulang tidak boleh membuat invoice berbeda untuk order sama.
+    if (payment.provider === "DUITKU") {
+      const saved = payment.rawResponse;
+
+      if (
+        saved &&
+        typeof saved === "object" &&
+        !Array.isArray(saved) &&
+        typeof saved.paymentUrl === "string"
+      ) {
+        return reply.send({
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          paymentUrl: saved.paymentUrl,
+          reference: payment.providerTransactionId,
+        });
+      }
+
+      return reply.code(409).send({
+        error: "Invoice Duitku sudah diproses. Periksa status transaksi.",
+      });
+    }
+
+    if (payment.provider !== "DEMO") {
+      return reply.code(409).send({
+        error: "Provider payment tidak sesuai.",
+      });
+    }
+
+    const timestamp = Date.now().toString();
+
+    const signature = createHmac("sha256", env.DUITKU_API_KEY)
+      .update(env.DUITKU_MERCHANT_CODE + timestamp)
+      .digest("hex");
+
+    let duitkuResponse: Response;
+
+    try {
+      duitkuResponse = await fetch(env.DUITKU_BASE_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-duitku-merchantcode": env.DUITKU_MERCHANT_CODE,
+          "x-duitku-timestamp": timestamp,
+          "x-duitku-signature": signature,
+        },
+        body: JSON.stringify({
+          paymentAmount: order.amount,
+          merchantOrderId: order.orderNumber,
+          productDetails: `Voucher WiFi ${order.package.name}`,
+          email,
+          phoneNumber: order.customerIdentifier || "",
+          customerVaName: "WiFi Kos",
+          callbackUrl: env.DUITKU_CALLBACK_URL,
+          returnUrl: env.DUITKU_RETURN_URL,
+          expiryPeriod: 15,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+    } catch (error) {
+      request.log.error(
+        { err: error, orderNumber: order.orderNumber },
+        "Request invoice Duitku gagal",
+      );
+
+      return reply.code(502).send({
+        error: "Duitku tidak bisa dihubungi. Periksa status invoice sebelum mencoba ulang.",
+      });
+    }
+
+    let result: {
+      reference?: string;
+      paymentUrl?: string;
+      statusCode?: string;
+      statusMessage?: string;
+    };
+
+    try {
+      result = await duitkuResponse.json();
+    } catch {
+      return reply.code(502).send({
+        error: "Respons invoice Duitku tidak valid.",
+      });
+    }
+
+    if (
+      !duitkuResponse.ok ||
+      result.statusCode !== "00" ||
+      typeof result.reference !== "string" ||
+      typeof result.paymentUrl !== "string" ||
+      !/^https:\/\/app-sandbox\.duitku\.com\//.test(result.paymentUrl)
+    ) {
+      request.log.warn(
+        {
+          orderNumber: order.orderNumber,
+          httpStatus: duitkuResponse.status,
+          duitkuStatus: result.statusCode,
+          duitkuMessage: result.statusMessage,
+        },
+        "Duitku menolak pembuatan invoice",
+      );
+
+      return reply.code(502).send({
+        error: "Invoice gagal dibuat. Periksa konfigurasi atau status Duitku Sandbox.",
+      });
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        const updated = await tx.payment.updateMany({
+          where: {
+            id: payment.id,
+            orderId: order.id,
+            provider: "DEMO",
+            status: "PENDING",
+          },
+          data: {
+            provider: "DUITKU",
+            method: "QRIS",
+            providerTransactionId: result.reference,
+            rawResponse: {
+              reference: result.reference,
+              paymentUrl: result.paymentUrl,
+              statusCode: result.statusCode,
+              statusMessage: result.statusMessage,
+            },
+          },
+        });
+
+        if (updated.count !== 1) {
+          throw new Error("PAYMENT_CHANGED_DURING_INVOICE_CREATION");
+        }
+      });
+    } catch (error) {
+      request.log.error(
+        { err: error, orderNumber: order.orderNumber },
+        "Invoice dibuat tetapi penyimpanan payment gagal",
+      );
+
+      return reply.code(409).send({
+        error: "Invoice mungkin sudah dibuat. Periksa transaksi sebelum mencoba ulang.",
+      });
+    }
+
+    return reply.send({
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      amount: order.amount,
+      paymentUrl: result.paymentUrl,
+      reference: result.reference,
+    });
+  });
+
   app.post<{
     Params: { orderId: string };
   }>("/api/payments/demo/:orderId/pay", async (request, reply) => {
@@ -69,6 +321,12 @@ export async function paymentRoutes(app: FastifyInstance) {
         error: "Payment pending tidak ditemukan",
       });
     }
+
+    if (payment.provider !== "DEMO") {
+  return reply.code(409).send({
+    error: "Order ini bukan pembayaran demo.",
+  });
+}
 
     if (!order.voucherId) {
       return reply.code(400).send({
@@ -335,15 +593,23 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
+    
     const payment = order.payments.find(
-      (item) => item.status === "PENDING",
+      (item) => item.status === "PENDING"
     );
 
     if (!payment) {
-      return reply.code(409).send({
-        error: "Payment pending tidak ditemukan.",
+      return reply.code(400).send({
+        error: "Payment pending tidak ditemukan",
       });
     }
+
+    if (!order.voucherId) {
+      return reply.code(400).send({
+        error: "Order tidak memiliki voucher",
+      });
+    }
+
 
     if (payment.amount !== order.amount) {
       return reply.code(409).send({
@@ -453,6 +719,196 @@ export async function paymentRoutes(app: FastifyInstance) {
         orderNumber: order.orderNumber,
       });
     }
+  });
+
+    
+  // Callback Duitku: status pembayaran hanya dipercaya jika signature valid.
+  app.post<{
+    Body: {
+      merchantCode?: string;
+      amount?: string;
+      merchantOrderId?: string;
+      resultCode?: string;
+      reference?: string;
+      signature?: string;
+    };
+  }>("/api/payments/duitku/callback", async (request, reply) => {
+    const body = request.body ?? {};
+
+    const merchantCode = body.merchantCode ?? "";
+    const amount = body.amount ?? "";
+    const merchantOrderId = body.merchantOrderId ?? "";
+    const resultCode = body.resultCode ?? "";
+    const reference = body.reference ?? "";
+    const signature = body.signature ?? "";
+
+    if (
+      !env.DUITKU_MERCHANT_CODE ||
+      !env.DUITKU_API_KEY
+    ) {
+      request.log.error("Konfigurasi callback Duitku belum lengkap.");
+      return reply.code(503).send("Configuration error");
+    }
+
+    // Validasi identitas merchant dan signature dari Duitku.
+    if (
+      merchantCode !== env.DUITKU_MERCHANT_CODE ||
+      !/^\d+$/.test(amount) ||
+      !merchantOrderId ||
+      !reference ||
+      !/^[a-fA-F0-9]{64}$/.test(signature) ||
+      !verifyDuitkuSignature(
+        merchantCode + amount + merchantOrderId,
+        signature,
+        env.DUITKU_API_KEY,
+      )
+    ) {
+      request.log.warn(
+        { merchantOrderId },
+        "Callback Duitku ditolak: signature atau identitas tidak valid.",
+      );
+      return reply.code(400).send("Invalid callback");
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { orderNumber: merchantOrderId },
+      include: { payments: true },
+    });
+
+    if (!order) {
+      request.log.warn(
+        { merchantOrderId },
+        "Callback Duitku diterima untuk order yang tidak ditemukan.",
+      );
+      return reply.code(404).send("Order not found");
+    }
+
+    const payment = order.payments.find(
+      (item) =>
+        item.provider === "DUITKU" &&
+        item.providerTransactionId === reference,
+    );
+
+    if (
+      !payment ||
+      payment.amount !== order.amount ||
+      Number(amount) !== order.amount
+    ) {
+      request.log.warn(
+        { merchantOrderId, reference },
+        "Callback Duitku ditolak: payment atau nominal tidak cocok.",
+      );
+      return reply.code(400).send("Payment mismatch");
+    }
+
+    // Callback dengan hasil selain sukses tidak melunasi order.
+    if (resultCode !== "00") {
+      request.log.info(
+        { merchantOrderId, resultCode },
+        "Callback Duitku bukan pembayaran sukses.",
+      );
+      return reply.code(200).send("OK");
+    }
+
+    // Callback sukses yang dikirim ulang harus tetap aman diproses.
+    if (
+      payment.status === "PAID" &&
+      ["PAID", "FULFILLING", "FULFILLED"].includes(order.status)
+    ) {
+      if (order.status === "FULFILLED") {
+        return reply.code(200).send("OK");
+      }
+
+      try {
+        await fulfillOrder(order.id);
+        return reply.code(200).send("OK");
+      } catch (error) {
+        request.log.error(
+          { err: error, merchantOrderId },
+          "Fulfillment ulang setelah callback Duitku gagal.",
+        );
+        return reply.code(500).send("Fulfillment failed");
+      }
+    }
+
+    if (
+      order.status !== "PENDING" ||
+      payment.status !== "PENDING"
+    ) {
+      request.log.warn(
+        {
+          merchantOrderId,
+          orderStatus: order.status,
+          paymentStatus: payment.status,
+        },
+        "Callback sukses perlu pemeriksaan status order.",
+      );
+      return reply.code(200).send("OK");
+    }
+
+    if (order.expiresAt && order.expiresAt <= new Date()) {
+      request.log.error(
+        { merchantOrderId, reference },
+        "Pembayaran sukses diterima untuk order yang sudah kedaluwarsa; perlu rekonsiliasi.",
+      );
+      return reply.code(200).send("OK");
+    }
+
+    try {
+      await prisma.$transaction(async (tx) => {
+        const claimedOrder = await tx.order.updateMany({
+          where: {
+            id: order.id,
+            status: "PENDING",
+          },
+          data: {
+            status: "PAID",
+            paidAt: new Date(),
+          },
+        });
+
+        if (claimedOrder.count !== 1) {
+          throw new Error("ORDER_STATUS_CHANGED");
+        }
+
+        const claimedPayment = await tx.payment.updateMany({
+          where: {
+            id: payment.id,
+            orderId: order.id,
+            provider: "DUITKU",
+            providerTransactionId: reference,
+            status: "PENDING",
+            amount: order.amount,
+          },
+          data: {
+            status: "PAID",
+            paidAt: new Date(),
+          },
+        });
+
+        if (claimedPayment.count !== 1) {
+          throw new Error("PAYMENT_STATUS_CHANGED");
+        }
+      });
+    } catch (error) {
+      request.log.error(
+        { err: error, merchantOrderId, reference },
+        "Gagal mengubah status pembayaran Duitku.",
+      );
+      return reply.code(500).send("Payment update failed");
+    }
+
+    try {
+      await fulfillOrder(order.id);
+    } catch (error) {
+      request.log.error(
+        { err: error, merchantOrderId, reference },
+        "Pembayaran sukses, tetapi fulfillment gagal.",
+      );
+      return reply.code(500).send("Fulfillment failed");
+    }
+
+    return reply.code(200).send("OK");
   });
 
 }

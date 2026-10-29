@@ -1,4 +1,4 @@
-
+import formbody from "@fastify/formbody";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
@@ -17,6 +17,9 @@ import { orderRoutes } from "./modules/orders/order.routes";
 export function buildApp() {
   const app = Fastify({ logger: true });
 
+  app.register(sensible);
+  app.register(formbody);
+  app.register(cookie);
   app.register(cors, {
     origin: true,
     credentials: true

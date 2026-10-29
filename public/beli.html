@@ -146,7 +146,8 @@
       margin: 22px 0 8px;
     }
 
-    input[type="text"] {
+    input[type="text"],
+input[type="email"] {
       width: 100%;
       padding: 13px;
       border: 1px solid var(--border);
@@ -255,6 +256,21 @@
       </label>
     </div>
 
+    
+<label class="field-label" for="customerEmail">
+  Email pembeli (wajib untuk pembayaran QRIS)
+</label>
+<input
+  id="customerEmail"
+  type="email"
+  placeholder="Contoh: nama@email.com"
+  autocomplete="email"
+>
+<div class="hint">
+  Email digunakan untuk membuat invoice Duitku. Gunakan email yang valid.
+</div>
+
+
     <label class="field-label" for="customer">
       Nomor WhatsApp pembeli (opsional)
     </label>
@@ -288,6 +304,11 @@
         <p id="voucherStatusText" aria-live="polite"></p>
       </div>
       <button id="continuePayment" class="submit hidden">
+      
+<button id="continueDuitku" class="submit hidden" type="button">
+  Lanjutkan Pembayaran QRIS
+</button>
+
         Lanjutkan ke WhatsApp Owner
       </button>
       <p class="hint">
@@ -321,6 +342,8 @@ const voucherCodeText = document.getElementById("voucherCodeText");
 const voucherStatusText = document.getElementById("voucherStatusText");
 const copyVoucherButton = document.getElementById("copyVoucherButton");
     const continueButton = document.getElementById("continuePayment");
+const continueDuitkuButton = document.getElementById("continueDuitku");
+const customerEmailInput = document.getElementById("customerEmail");
 
     function showMessage(message) {
       messageBox.textContent = message;
@@ -420,14 +443,18 @@ const copyVoucherButton = document.getElementById("copyVoucherButton");
     `Status: ${status}.`;
 
   continueButton.classList.add("hidden");
-  voucherDetails.classList.add("hidden");
+continueDuitkuButton.classList.add("hidden");
+voucherDetails.classList.add("hidden");
 
-  if (status === "PENDING") {
+  
+if (status === "PENDING") {
     if (order.paymentMethod === "QRIS") {
       paymentDetails.textContent =
-        "QRIS otomatis belum tersedia. Hubungi WhatsApp Owner " +
-        "untuk instruksi pembayaran manual. Pesanan belum dianggap lunas.";
+        "Pesanan menunggu pembayaran. Klik tombol di bawah " +
+        "untuk membuka invoice Duitku. Pesanan belum dianggap lunas.";
+      continueDuitkuButton.classList.remove("hidden");
     } else {
+
       paymentDetails.textContent =
         "Pesanan menunggu pembayaran dan verifikasi owner.";
       continueButton.classList.remove("hidden");
@@ -472,6 +499,77 @@ const copyVoucherButton = document.getElementById("copyVoucherButton");
 
   orderResult.classList.remove("hidden");
 }
+
+
+async function createDuitkuInvoice() {
+  if (!currentOrder) {
+    showMessage("Data pesanan tidak ditemukan. Muat ulang halaman.");
+    return;
+  }
+
+  const email = customerEmailInput.value.trim();
+
+  if (!email || !customerEmailInput.validity.valid) {
+    showMessage("Masukkan alamat email yang valid untuk pembayaran QRIS.");
+    customerEmailInput.focus();
+    return;
+  }
+
+  const orderId = currentOrder.orderId || currentOrder.id;
+
+  if (!orderId) {
+    showMessage("ID pesanan tidak ditemukan. Silakan hubungi owner.");
+    return;
+  }
+
+  continueDuitkuButton.disabled = true;
+  continueDuitkuButton.textContent = "Menyiapkan invoice...";
+  clearMessage();
+
+  try {
+    const response = await fetch(
+      `/api/payments/duitku/${encodeURIComponent(orderId)}/create`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ email })
+      }
+    );
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(
+        data.message ||
+        data.error ||
+        "Invoice Duitku gagal dibuat. Coba lagi."
+      );
+    }
+
+    if (
+      typeof data.paymentUrl !== "string" ||
+      !data.paymentUrl.startsWith("https://app-sandbox.duitku.com/")
+    ) {
+      throw new Error(
+        "URL pembayaran Sandbox tidak valid. Hubungi owner."
+      );
+    }
+
+    window.location.assign(data.paymentUrl);
+  } catch (error) {
+    showMessage(
+      error instanceof Error
+        ? error.message
+        : "Koneksi ke Duitku gagal. Silakan coba lagi."
+    );
+  } finally {
+    continueDuitkuButton.disabled = false;
+    continueDuitkuButton.textContent = "Coba Buka Pembayaran QRIS";
+  }
+}
+
 
 async function refreshOrderStatus() {
   if (!currentOrder || orderPollInProgress) return;
@@ -621,6 +719,18 @@ function startOrderPolling() {
         'input[name="payment"]:checked'
       ).value;
 
+      
+if (paymentMethod === "QRIS") {
+  const email = customerEmailInput.value.trim();
+
+  if (!email || !customerEmailInput.validity.valid) {
+    showMessage("Masukkan alamat email yang valid untuk pembayaran QRIS.");
+    customerEmailInput.focus();
+    return;
+  }
+}
+
+
       const packageCode = selectedPackage.code;
       const customerIdentifier =
         document.getElementById("customer").value.trim();
@@ -689,10 +799,13 @@ function startOrderPolling() {
 
         pendingOrderAttempt = null;
 
-        renderCurrentOrder(currentOrder);
+renderCurrentOrder(currentOrder);
 
+if (paymentMethod === "QRIS") {
+  await createDuitkuInvoice();
+}
 
-      } catch (error) {
+} catch (error) {
         showMessage(
           error instanceof Error
             ? error.message
@@ -737,6 +850,10 @@ function startOrderPolling() {
         "noopener,noreferrer"
       );
     });
+
+continueDuitkuButton.addEventListener("click", async () => {
+  await createDuitkuInvoice();
+});
 
     copyVoucherButton.addEventListener("click", async () => {
   const code = voucherCodeText.textContent.trim();
