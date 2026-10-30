@@ -25,9 +25,6 @@ export function buildApp() {
     credentials: true
   });
 
-  app.register(sensible);
-  app.register(cookie);
-
   app.register(session, {
     secret: env.SESSION_SECRET,
     cookieName: "wifi_admin_session",

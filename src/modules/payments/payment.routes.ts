@@ -166,7 +166,7 @@ export async function paymentRoutes(app: FastifyInstance) {
           customerVaName: "WiFi Kos",
           callbackUrl: env.DUITKU_CALLBACK_URL,
           returnUrl: env.DUITKU_RETURN_URL,
-          expiryPeriod: 15,
+          expiryPeriod: 60,
         }),
         signal: AbortSignal.timeout(15000),
       });
@@ -831,6 +831,68 @@ export async function paymentRoutes(app: FastifyInstance) {
       }
     }
 
+    // Pembayaran sukses yang diterima setelah order kedaluwarsa.
+if (
+  order.status === "EXPIRED" &&
+  payment.status === "EXPIRED"
+) {
+  try {
+    await prisma.$transaction(async (tx) => {
+      const updatedPayment = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          orderId: order.id,
+          provider: "DUITKU",
+          providerTransactionId: reference,
+          status: "EXPIRED",
+          amount: order.amount,
+        },
+        data: {
+          status: "PAID",
+          paidAt: new Date(),
+        },
+      });
+
+      if (updatedPayment.count !== 1) {
+        throw new Error("LATE_PAYMENT_ALREADY_PROCESSED");
+      }
+
+      await tx.auditLog.create({
+        data: {
+          action: "LATE_PAYMENT_RECONCILIATION_REQUIRED",
+          entityType: "Order",
+          entityId: order.id,
+          description: `Pembayaran Duitku sukses diterima setelah order ${order.orderNumber} kedaluwarsa`,
+          metadata: {
+            orderNumber: order.orderNumber,
+            paymentId: payment.id,
+            reference,
+            amount: order.amount,
+            resultCode,
+            previousOrderStatus: "EXPIRED",
+            previousPaymentStatus: "EXPIRED",
+            reconciliationRequired: true,
+          },
+        },
+      });
+    });
+
+    request.log.warn(
+      { merchantOrderId, reference },
+      "Pembayaran terlambat tercatat. Order tetap EXPIRED dan perlu rekonsiliasi admin.",
+    );
+
+    return reply.code(200).send("OK");
+  } catch (error) {
+    request.log.error(
+      { err: error, merchantOrderId, reference },
+      "Gagal mencatat pembayaran terlambat.",
+    );
+
+    return reply.code(500).send("Late payment reconciliation failed");
+  }
+}
+
     if (
       order.status !== "PENDING" ||
       payment.status !== "PENDING"
@@ -856,16 +918,22 @@ export async function paymentRoutes(app: FastifyInstance) {
 
     try {
       await prisma.$transaction(async (tx) => {
-        const claimedOrder = await tx.order.updateMany({
-          where: {
-            id: order.id,
-            status: "PENDING",
-          },
-          data: {
-            status: "PAID",
-            paidAt: new Date(),
-          },
-        });
+       const paidAt = new Date();
+
+const claimedOrder = await tx.order.updateMany({
+  where: {
+    id: order.id,
+    status: "PENDING",
+    OR: [
+      { expiresAt: null },
+      { expiresAt: { gt: paidAt } },
+    ],
+  },
+  data: {
+    status: "PAID",
+    paidAt,
+  },
+});
 
         if (claimedOrder.count !== 1) {
           throw new Error("ORDER_STATUS_CHANGED");
@@ -882,7 +950,7 @@ export async function paymentRoutes(app: FastifyInstance) {
           },
           data: {
             status: "PAID",
-            paidAt: new Date(),
+            paidAt,
           },
         });
 

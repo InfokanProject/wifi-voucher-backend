@@ -110,8 +110,32 @@ export async function createMikrotikUser({
     );
 
     if (existingUsers.length > 0) {
-      return { created: false, user: existingUsers[0] };
-    }
+  const existingUser = existingUsers[0];
+
+  const existingProfile = String(existingUser.profile ?? "");
+  const existingComment = String(existingUser.comment ?? "");
+
+  if (existingProfile !== profile) {
+    throw new Error(
+      "MIKROTIK_USER_EXISTS_WITH_DIFFERENT_PROFILE"
+    );
+  }
+
+  const isManagedUser =
+    existingComment === "NEW" ||
+    existingComment.startsWith("ACTIVATED ");
+
+  if (!isManagedUser) {
+    throw new Error(
+      "MIKROTIK_USER_EXISTS_BUT_NOT_MANAGED_BY_BACKEND"
+    );
+  }
+
+  return {
+    created: false,
+    user: existingUser,
+  };
+}
 
     await api.write("/ip/hotspot/user/add", [
       `=name=${username}`,

@@ -65,7 +65,7 @@ export async function orderRoutes(app: FastifyInstance) {
     }
 
     const now = new Date();
-    const reservedUntil = new Date(now.getTime() + 15 * 60 * 1000);
+    const reservedUntil = new Date(now.getTime() + 60 * 60 * 1000);
 
     try {
       const result = await prisma.$transaction(async (tx) => {
@@ -289,13 +289,16 @@ export async function orderRoutes(app: FastifyInstance) {
           },
         },
         payments: {
-          select: {
-            status: true,
-            method: true,
-            amount: true,
-            paidAt: true,
-          },
-        },
+  select: {
+    provider: true,
+    providerTransactionId: true,
+    status: true,
+    method: true,
+    amount: true,
+    paidAt: true,
+    rawResponse: true,
+  },
+},
       },
     });
 
@@ -309,8 +312,17 @@ export async function orderRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>(
     "/api/orders/:id",
     async (request, reply) => {
-      const order = await prisma.order.findUnique({
-        where: { id: request.params.id },
+     const identifier = request.params.id;
+
+const isUuid =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+    identifier
+  );
+
+const order = await prisma.order.findFirst({
+  where: isUuid
+    ? { id: identifier }
+    : { orderNumber: identifier },
         select: {
           id: true,
           orderNumber: true,
