@@ -1,293 +1,251 @@
-
 <!DOCTYPE html>
 <html lang="id">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Beli Voucher WiFi Kos</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Beli Voucher WiFi</title>
+  <!-- Load Midtrans Snap JS (Sandbox) -->
+  <script src="https://app.sandbox.midtrans.com/snap/snap.js"></script>
   <style>
     :root {
-      --navy: #142b45;
-      --teal: #087f8c;
-      --bg: #f4f7fa;
-      --muted: #667085;
-      --border: #e0e7ef;
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --muted: #94a3b8;
+      --primary: #2563eb;
+      --primary-hover: #1d4ed8;
+      --accent: #10b981;
+      --border: #334155;
     }
 
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
     body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--navy);
-      font-family: Arial, sans-serif;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 1rem;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
     }
 
-    header {
-      background: white;
-      border-bottom: 1px solid var(--border);
-      padding: 18px 20px;
+    main {
+      max-width: 480px;
+      margin: 0 auto;
+      width: 100%;
+      flex: 1;
     }
-
-    .header-inner, main {
-      width: min(960px, 100%);
-      margin: auto;
-    }
-
-    .brand {
-      font-size: 20px;
-      font-weight: 800;
-    }
-
-    .brand span { color: var(--teal); }
-
-    .tagline {
-      color: var(--muted);
-      font-size: 13px;
-      margin-top: 5px;
-    }
-
-    main { padding: 30px 20px 48px; }
 
     h1 {
-      font-size: clamp(25px, 5vw, 34px);
-      margin: 0 0 9px;
+      font-size: 1.5rem;
+      margin-bottom: 0.5rem;
+      text-align: center;
     }
 
-    .intro {
+    .subtitle {
       color: var(--muted);
-      margin: 0 0 25px;
-      line-height: 1.6;
-    }
-
-    .section-title {
-      font-size: 18px;
-      margin: 25px 0 14px;
+      font-size: 0.875rem;
+      text-align: center;
+      margin-bottom: 1.5rem;
     }
 
     .packages {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 12px;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.75rem;
+      margin-bottom: 1.5rem;
     }
 
     .package {
-      background: white;
-      border: 1px solid var(--border);
-      border-radius: 13px;
-      padding: 17px;
+      background: var(--card-bg);
+      border: 2px solid var(--border);
+      border-radius: 0.5rem;
+      padding: 1rem;
       cursor: pointer;
       text-align: left;
-      color: inherit;
-      font: inherit;
-      min-width: 0;
+      color: var(--text);
+      transition: all 0.2s;
+    }
+
+    .package:hover {
+      border-color: var(--primary);
     }
 
     .package.selected {
-      border: 2px solid var(--teal);
-      padding: 16px;
-      background: #f0fbfb;
+      border-color: var(--primary);
+      background: #1e3a8a33;
     }
 
     .package-name {
-      font-weight: 700;
-      font-size: 16px;
+      font-weight: 600;
+      font-size: 1.125rem;
+      margin-bottom: 0.25rem;
     }
 
     .price {
-      font-weight: 800;
-      font-size: 22px;
-      margin: 12px 0 8px;
-      overflow-wrap: anywhere;
+      color: var(--accent);
+      font-weight: 700;
+      font-size: 1rem;
     }
 
     .speed {
+      font-size: 0.75rem;
       color: var(--muted);
-      font-size: 13px;
-    }
-
-    .methods {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 12px;
-    }
-
-    .method {
-      background: white;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 16px;
-      display: flex;
-      gap: 10px;
-      align-items: flex-start;
-      cursor: pointer;
-    }
-
-    .method.selected {
-      border: 2px solid var(--teal);
-      padding: 15px;
-      background: #f0fbfb;
-    }
-
-    .method input { margin-top: 4px; }
-
-    .method-title { font-weight: 700; }
-
-    .method-desc {
-      font-size: 13px;
-      line-height: 1.5;
-      color: var(--muted);
-      margin-top: 5px;
     }
 
     .field-label {
       display: block;
-      font-weight: 700;
-      margin: 22px 0 8px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      margin-bottom: 0.375rem;
+      margin-top: 1rem;
     }
 
-    input[type="text"],
-input[type="email"] {
+    input[type="email"],
+    input[type="text"] {
       width: 100%;
-      padding: 13px;
+      padding: 0.75rem;
+      background: var(--card-bg);
       border: 1px solid var(--border);
-      border-radius: 9px;
-      font: inherit;
-      background: white;
+      border-radius: 0.375rem;
+      color: var(--text);
+      font-size: 0.875rem;
+      margin-bottom: 0.25rem;
+    }
+
+    input:focus {
+      outline: none;
+      border-color: var(--primary);
     }
 
     .hint {
+      font-size: 0.75rem;
       color: var(--muted);
-      font-size: 12px;
-      line-height: 1.5;
-      margin-top: 7px;
+      margin-bottom: 1rem;
     }
 
     .submit {
-      margin-top: 22px;
       width: 100%;
-      border: 0;
-      border-radius: 10px;
-      background: var(--teal);
+      padding: 0.875rem;
+      background: var(--primary);
       color: white;
-      padding: 15px;
-      font-size: 16px;
-      font-weight: 700;
+      border: none;
+      border-radius: 0.375rem;
+      font-weight: 600;
+      font-size: 1rem;
       cursor: pointer;
+      margin-top: 0.5rem;
+    }
+
+    .submit:hover:not(:disabled) {
+      background: var(--primary-hover);
     }
 
     .submit:disabled {
-      opacity: .6;
-      cursor: wait;
+      opacity: 0.5;
+      cursor: not-allowed;
     }
 
-    .notice, .result {
-      margin-top: 18px;
-      padding: 15px;
-      border-radius: 10px;
-      background: white;
+    .notice {
+      background: #334155;
+      padding: 0.75rem;
+      border-radius: 0.375rem;
+      margin-top: 1rem;
+      font-size: 0.875rem;
+    }
+
+    .result {
+      background: var(--card-bg);
       border: 1px solid var(--border);
-      line-height: 1.6;
-      overflow-wrap: anywhere;
+      border-radius: 0.5rem;
+      padding: 1.25rem;
+      margin-top: 1.5rem;
     }
 
-    .result h2 { font-size: 19px; margin-top: 0; }
+    .result h2 {
+      font-size: 1.125rem;
+      margin-bottom: 0.75rem;
+    }
 
-    .hidden { display: none; }
+    .result p {
+      font-size: 0.875rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .hidden {
+      display: none !important;
+    }
 
     footer {
       text-align: center;
+      padding: 1.5rem 0;
       color: var(--muted);
-      font-size: 12px;
-      padding: 20px;
+      font-size: 0.75rem;
+      margin-top: auto;
     }
 
-    @media (max-width: 650px) {
-      main { padding: 25px 15px 36px; }
-      .packages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .package { padding: 13px; }
-      .package.selected { padding: 12px; }
-      .price { font-size: 19px; }
-      .methods { grid-template-columns: 1fr; }
+    #voucherCodeText {
+      font-family: monospace;
+      font-size: 1.5rem;
+      letter-spacing: 3px;
+      color: var(--accent);
+      background: #0f172a;
+      padding: 0.75rem;
+      border: 1px dashed var(--accent);
+      border-radius: 0.375rem;
+      text-align: center;
+      margin: 0.75rem 0;
     }
   </style>
 </head>
 <body>
-  <header>
-    <div class="header-inner">
-      <div class="brand">WiFi <span>Kos</span></div>
-      <div class="tagline">Internet kos praktis, pilih paketmu.</div>
-    </div>
-  </header>
-
   <main>
-    <h1>Pilih Paket WiFi</h1>
-    <p class="intro">
-      Pilih masa aktif dan kecepatan sesuai kebutuhanmu.
-      Voucher akan diproses setelah pembayaran terverifikasi.
-    </p>
+    <h1>Beli Voucher WiFi Kos</h1>
+    <div class="subtitle">Pilih paket internet sesuai kebutuhan kamu</div>
 
-    <h2 class="section-title">1. Pilih paket</h2>
-    <div id="packages" class="packages">
-      <div class="notice">Memuat daftar paket...</div>
-    </div>
+    <div id="buyForm">
+      <div id="packages" class="packages">
+        <div class="notice">Memuat daftar paket...</div>
+      </div>
 
-    <h2 class="section-title">2. Pilih metode pembayaran</h2>
-    <div class="methods">
-      <label class="method selected" data-method="QRIS">
-        <input type="radio" name="payment" value="QRIS" checked>
-        <div>
-          <div class="method-title">QRIS Otomatis</div>
-          <div class="method-desc">
-            Bayar melalui QRIS. Pesanan akan dikonfirmasi otomatis
-            setelah integrasi pembayaran aktif.
-          </div>
-        </div>
+      <label class="field-label" for="customerEmail">
+        Email pembeli (wajib untuk pembayaran QRIS)
       </label>
+      <input
+        id="customerEmail"
+        type="email"
+        placeholder="Contoh: nama@email.com"
+        autocomplete="email"
+        required
+      >
+      <div class="hint">
+        Email digunakan untuk mengirimkan konfirmasi pembayaran Midtrans.
+      </div>
 
-      <label class="method" data-method="WHATSAPP">
-        <input type="radio" name="payment" value="WHATSAPP">
-        <div>
-          <div class="method-title">WhatsApp Owner</div>
-          <div class="method-desc">
-            Hubungi owner untuk instruksi pembayaran dan konfirmasi manual.
-          </div>
-        </div>
+      <label class="field-label" for="customer">
+        Nomor WhatsApp pembeli (opsional)
       </label>
+      <input
+        id="customer"
+        type="text"
+        placeholder="Contoh: 081234567890"
+        autocomplete="tel"
+      >
+      <div class="hint">
+        Digunakan sebagai informasi pesanan jika diperlukan.
+      </div>
+
+      <button id="createOrder" class="submit" disabled>
+        Pilih paket terlebih dahulu
+      </button>
     </div>
-
-    
-<label class="field-label" for="customerEmail">
-  Email pembeli (wajib untuk pembayaran QRIS)
-</label>
-<input
-  id="customerEmail"
-  type="email"
-  placeholder="Contoh: nama@email.com"
-  autocomplete="email"
->
-<div class="hint">
-  Email digunakan untuk membuat invoice Duitku. Gunakan email yang valid.
-</div>
-
-
-    <label class="field-label" for="customer">
-      Nomor WhatsApp pembeli (opsional)
-    </label>
-    <input
-      id="customer"
-      type="text"
-      placeholder="Contoh: 081234567890"
-      autocomplete="tel"
-    >
-    <div class="hint">
-      Digunakan sebagai informasi pesanan jika diperlukan.
-      Jangan masukkan PIN, kata sandi, atau kode OTP.
-    </div>
-
-    <button id="createOrder" class="submit" disabled>
-      Pilih paket terlebih dahulu
-    </button>
 
     <div id="message" class="notice hidden" role="status"></div>
 
@@ -295,25 +253,43 @@ input[type="email"] {
       <h2>Pesanan berhasil dibuat</h2>
       <p id="orderDetails"></p>
       <p id="paymentDetails"></p>
-            <div id="voucherDetails" class="hidden">
-        <p><strong>Kode voucher WiFi</strong></p>
+
+      <!-- Input email tambahan jika belum terisi saat status PENDING -->
+      <div id="pendingEmailSection" class="hidden">
+        <label class="field-label" for="pendingEmailInput">
+          Email pembeli (wajib untuk QRIS):
+        </label>
+        <input
+          id="pendingEmailInput"
+          type="email"
+          placeholder="Masukkan email kamu..."
+          autocomplete="email"
+        >
+      </div>
+
+      <div id="voucherDetails" class="hidden">
+        <p><strong>Kode voucher WiFi kamu:</strong></p>
         <p id="voucherCodeText"></p>
         <button id="copyVoucherButton" class="submit" type="button">
           Salin Kode Voucher
         </button>
-        <p id="voucherStatusText" aria-live="polite"></p>
+        <p id="voucherStatusText" aria-live="polite" style="margin-top: 0.5rem;"></p>
       </div>
-      <button id="continuePayment" class="submit hidden">
-      
-<button id="continueDuitku" class="submit hidden" type="button">
-  Lanjutkan Pembayaran QRIS
-</button>
 
-        Lanjutkan ke WhatsApp Owner
+      <button id="continueMidtrans" class="submit hidden" type="button">
+        Bayar QRIS Sekarang (Midtrans)
       </button>
-      <p class="hint">
-        Kode voucher belum diterbitkan. Tunggu sampai pembayaran
-        diverifikasi dan pesanan berhasil diproses.
+
+      <button id="refreshOrderButton" class="submit" type="button" style="background: #475569; margin-top: 0.5rem;">
+        Cek Status Pembayaran
+      </button>
+
+      <button id="newOrderButton" class="submit hidden" type="button" style="background: #334155; margin-top: 0.5rem;">
+        Batal / Buat Pesanan Baru
+      </button>
+
+      <p id="pendingHint" class="hint" style="margin-top: 0.75rem;">
+        Kode voucher belum diterbitkan. Selesaikan pembayaran di jendela pop-up.
       </p>
     </section>
   </main>
@@ -321,29 +297,31 @@ input[type="email"] {
   <footer>WiFi Kos · Layanan voucher internet</footer>
 
   <script>
-    // Ganti dengan nomor WhatsApp owner setelah siap.
-    // Format internasional tanpa tanda +, spasi, atau tanda hubung.
-    const OWNER_WA = "6285846462230";
-
     let packages = [];
     let selectedPackage = null;
     let currentOrder = null;
     let pendingOrderAttempt = null;
-    let orderPollInProgress = false;
+    let pollTimer = null;
 
+    const buyForm = document.getElementById("buyForm");
     const packageContainer = document.getElementById("packages");
     const createButton = document.getElementById("createOrder");
     const messageBox = document.getElementById("message");
     const orderResult = document.getElementById("orderResult");
     const orderDetails = document.getElementById("orderDetails");
     const paymentDetails = document.getElementById("paymentDetails");
+    const pendingEmailSection = document.getElementById("pendingEmailSection");
+    const pendingEmailInput = document.getElementById("pendingEmailInput");
     const voucherDetails = document.getElementById("voucherDetails");
-const voucherCodeText = document.getElementById("voucherCodeText");
-const voucherStatusText = document.getElementById("voucherStatusText");
-const copyVoucherButton = document.getElementById("copyVoucherButton");
-    const continueButton = document.getElementById("continuePayment");
-const continueDuitkuButton = document.getElementById("continueDuitku");
-const customerEmailInput = document.getElementById("customerEmail");
+    const voucherCodeText = document.getElementById("voucherCodeText");
+    const voucherStatusText = document.getElementById("voucherStatusText");
+    const copyVoucherButton = document.getElementById("copyVoucherButton");
+    const continueMidtransButton = document.getElementById("continueMidtrans");
+    const refreshOrderButton = document.getElementById("refreshOrderButton");
+    const newOrderButton = document.getElementById("newOrderButton");
+    const pendingHint = document.getElementById("pendingHint");
+    const customerEmailInput = document.getElementById("customerEmail");
+    const customerPhoneInput = document.getElementById("customer");
 
     function showMessage(message) {
       messageBox.textContent = message;
@@ -373,6 +351,39 @@ const customerEmailInput = document.getElementById("customerEmail");
       })[char]);
     }
 
+    function saveOrderToStorage(order) {
+      try {
+        localStorage.setItem("wifi_last_order", JSON.stringify(order));
+      } catch (e) {}
+    }
+
+    function getOrderFromStorage() {
+      try {
+        const saved = localStorage.getItem("wifi_last_order");
+        return saved ? JSON.parse(saved) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function clearOrderStorage() {
+      try {
+        localStorage.removeItem("wifi_last_order");
+      } catch (e) {}
+    }
+
+    function stopPolling() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+    }
+
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(refreshOrderStatus, 2000);
+    }
+
     function renderPackages() {
       if (!packages.length) {
         packageContainer.innerHTML =
@@ -394,7 +405,7 @@ const customerEmailInput = document.getElementById("customerEmail");
         if (!pkg.name && duration > 0) {
           durationLabel = duration >= 1440
             ? `${duration / 1440} Hari`
-            : `${duration} Menit`;
+            : `${duration / 60} Jam`;
         }
 
         card.innerHTML = `
@@ -424,456 +435,262 @@ const customerEmailInput = document.getElementById("customerEmail");
       });
     }
 
-    
     function renderCurrentOrder(order) {
-  const status = order.status || "PENDING";
-  const heading = orderResult.querySelector("h2");
-  const voucher = order.voucher;
+      currentOrder = order;
+      saveOrderToStorage(order);
 
-  heading.textContent =
-    status === "FULFILLED" ? "Pesanan selesai" :
-    status === "EXPIRED" ? "Pesanan kedaluwarsa" :
-    status === "CANCELLED" ? "Pesanan dibatalkan" :
-    "Detail pesanan";
+      const status = order.status || "PENDING";
+      const heading = orderResult.querySelector("h2");
+      const voucher = order.voucher;
 
-  orderDetails.textContent =
-    `Nomor pesanan: ${order.orderNumber}. ` +
-    `Paket: ${order.packageName}. ` +
-    `Harga: ${formatRupiah(Number(order.price))}. ` +
-    `Status: ${status}.`;
+      heading.textContent =
+        status === "FULFILLED" ? "🎉 Pesanan Selesai" :
+        status === "EXPIRED" ? "Pesanan Kedaluwarsa" :
+        status === "CANCELLED" ? "Pesanan Dibatalkan" :
+        "Detail Pesanan";
 
-  continueButton.classList.add("hidden");
-continueDuitkuButton.classList.add("hidden");
-voucherDetails.classList.add("hidden");
+      orderDetails.textContent =
+        `Nomor pesanan: ${order.orderNumber}. ` +
+        `Harga: ${formatRupiah(Number(order.amount || order.price))}. ` +
+        `Status: ${status}.`;
 
-  
-if (status === "PENDING") {
-    if (order.paymentMethod === "QRIS") {
-      paymentDetails.textContent =
-        "Pesanan menunggu pembayaran. Klik tombol di bawah " +
-        "untuk membuka invoice Duitku. Pesanan belum dianggap lunas.";
-      continueDuitkuButton.classList.remove("hidden");
-    } else {
+      continueMidtransButton.classList.add("hidden");
+      voucherDetails.classList.add("hidden");
+      newOrderButton.classList.remove("hidden"); // Selalu bisa batal/buat pesanan baru
+      pendingHint.classList.remove("hidden");
+      pendingEmailSection.classList.add("hidden");
 
-      paymentDetails.textContent =
-        "Pesanan menunggu pembayaran dan verifikasi owner.";
-      continueButton.classList.remove("hidden");
-    }
-  } else if (status === "FULFILLED") {
-    paymentDetails.textContent =
-      "Pembayaran sudah dikonfirmasi. Berikut informasi voucher kamu.";
+      if (status === "PENDING") {
+        buyForm.classList.add("hidden");
+        paymentDetails.textContent =
+          "Pesanan menunggu pembayaran. Isikan email jika belum, lalu klik tombol di bawah untuk membuka QRIS Midtrans.";
 
-    if (voucher && voucher.code) {
-      voucherDetails.classList.remove("hidden");
-      voucherCodeText.textContent = voucher.code;
+        // Tampilkan kolom email jika belum terisi
+        pendingEmailSection.classList.remove("hidden");
+        if (customerEmailInput.value.trim()) {
+          pendingEmailInput.value = customerEmailInput.value.trim();
+        }
 
-      const voucherStatus = voucher.status || "SOLD";
-
-      if (voucherStatus === "ACTIVATED") {
-        voucherStatusText.textContent =
-          "Status voucher: AKTIF" +
-          (voucher.expiresAt
-            ? ` · Berlaku sampai ${new Date(voucher.expiresAt).toLocaleString("id-ID")}`
-            : "");
-      } else if (voucherStatus === "EXPIRED") {
-        voucherStatusText.textContent = "Status voucher: KEDALUWARSA.";
+        continueMidtransButton.classList.remove("hidden");
+        refreshOrderButton.classList.remove("hidden");
+        startPolling();
       } else {
-        voucherStatusText.textContent =
-          "Status voucher: BELUM AKTIF. Hubungkan perangkat ke WiFi " +
-          "dan login menggunakan voucher untuk memulai masa berlaku.";
+        stopPolling();
       }
-    } else {
-      paymentDetails.textContent =
-        "Pembayaran sudah dikonfirmasi, tetapi data voucher belum tersedia. " +
-        "Silakan tunggu sebentar.";
-    }
-  } else if (status === "EXPIRED") {
-    paymentDetails.textContent =
-      "Pesanan sudah kedaluwarsa. Buat pesanan baru jika masih ingin membeli.";
-  } else if (status === "CANCELLED") {
-    paymentDetails.textContent = "Pesanan dibatalkan.";
-  } else {
-    paymentDetails.textContent =
-      `Status pesanan saat ini: ${status}. Hubungi owner jika perlu bantuan.`;
-  }
 
-  orderResult.classList.remove("hidden");
-}
+      if (status === "FULFILLED") {
+        buyForm.classList.add("hidden");
+        pendingHint.classList.add("hidden");
+        refreshOrderButton.classList.add("hidden");
 
+        paymentDetails.textContent =
+          "Pembayaran sudah dikonfirmasi! Berikut kode voucher WiFi kamu:";
 
-async function createDuitkuInvoice() {
-  if (!currentOrder) {
-    showMessage("Data pesanan tidak ditemukan. Muat ulang halaman.");
-    return;
-  }
+        if (voucher && voucher.code) {
+          voucherDetails.classList.remove("hidden");
+          voucherCodeText.textContent = voucher.code;
 
-  const email = customerEmailInput.value.trim();
+          const voucherStatus = voucher.status || "SOLD";
 
-  if (!email || !customerEmailInput.validity.valid) {
-    showMessage("Masukkan alamat email yang valid untuk pembayaran QRIS.");
-    customerEmailInput.focus();
-    return;
-  }
-
-  const orderId = currentOrder.orderId || currentOrder.id;
-
-  if (!orderId) {
-    showMessage("ID pesanan tidak ditemukan. Silakan hubungi owner.");
-    return;
-  }
-
-  continueDuitkuButton.disabled = true;
-  continueDuitkuButton.textContent = "Menyiapkan invoice...";
-  clearMessage();
-
-  try {
-    const response = await fetch(
-      `/api/payments/duitku/${encodeURIComponent(orderId)}/create`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ email })
+          if (voucherStatus === "ACTIVATED") {
+            voucherStatusText.textContent =
+              "Status voucher: AKTIF" +
+              (voucher.expiresAt
+                ? ` · Berlaku sampai ${new Date(voucher.expiresAt).toLocaleString("id-ID")}`
+                : "");
+          } else if (voucherStatus === "EXPIRED") {
+            voucherStatusText.textContent = "Status voucher: KEDALUWARSA.";
+          } else {
+            voucherStatusText.textContent =
+              "Status voucher: BELUM AKTIF. Hubungkan perangkat ke WiFi " +
+              "dan login menggunakan kode voucher di atas.";
+          }
+        } else {
+          paymentDetails.textContent =
+            "Pembayaran dikonfirmasi, sedang menyiapkan kode voucher...";
+        }
+      } else if (status === "EXPIRED" || status === "CANCELLED") {
+        buyForm.classList.remove("hidden");
+        refreshOrderButton.classList.add("hidden");
+        pendingHint.classList.add("hidden");
+        paymentDetails.textContent =
+          status === "EXPIRED"
+            ? "Pesanan sudah kedaluwarsa. Silakan buat pesanan baru."
+            : "Pesanan dibatalkan.";
       }
-    );
 
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      throw new Error(
-        data.message ||
-        data.error ||
-        "Invoice Duitku gagal dibuat. Coba lagi."
-      );
+      orderResult.classList.remove("hidden");
     }
 
-    if (
-      typeof data.paymentUrl !== "string" ||
-      !data.paymentUrl.startsWith("https://app-sandbox.duitku.com/")
-    ) {
-      throw new Error(
-        "URL pembayaran Sandbox tidak valid. Hubungi owner."
-      );
+    async function refreshOrderStatus() {
+      if (!currentOrder) return;
+      const orderId = currentOrder.orderId || currentOrder.id || currentOrder.orderNumber;
+      if (!orderId) return;
+
+      try {
+        const response = await fetch(`/api/orders/${encodeURIComponent(orderId)}`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data && data.status) {
+          renderCurrentOrder(data);
+        }
+      } catch (err) {}
     }
 
-    window.location.assign(data.paymentUrl);
-  } catch (error) {
-    showMessage(
-      error instanceof Error
-        ? error.message
-        : "Koneksi ke Duitku gagal. Silakan coba lagi."
-    );
-  } finally {
-    continueDuitkuButton.disabled = false;
-    continueDuitkuButton.textContent = "Coba Buka Pembayaran QRIS";
-  }
-}
-
-
-async function refreshOrderStatus() {
-  if (!currentOrder || orderPollInProgress) return;
-
-  const orderId = currentOrder.orderId || currentOrder.id;
-  if (!orderId) return;
-
-  orderPollInProgress = true;
-
-  try {
-    const response = await fetch(
-      `/api/orders/${encodeURIComponent(orderId)}`
-    );
-
-    if (!response.ok) return;
-
-    const data = await response.json();
-
-    currentOrder = {
-      ...currentOrder,
-      orderId: data.id,
-      orderNumber: data.orderNumber,
-      status: data.status,
-      amount: data.amount,
-      price: Number(data.amount),
-      packageName: data.package.name || data.package.code,
-      voucher: data.voucher,
-    };
-
-    renderCurrentOrder(currentOrder);
-
-    if (
-      data.status === "EXPIRED" ||
-      data.status === "CANCELLED" ||
-      (
-        data.status === "FULFILLED" &&
-        ["ACTIVATED", "EXPIRED"].includes(data.voucher?.status)
-      )
-    ) {
-      if (orderPollTimer) {
-        clearInterval(orderPollTimer);
-        orderPollTimer = null;
+    async function createMidtransTransaction() {
+      if (!currentOrder) {
+        showMessage("Data pesanan tidak ditemukan.");
+        return;
       }
-    }
-  } catch (error) {
-    // Gangguan sementara tidak menghapus data pesanan di halaman.
-  } finally {
-    orderPollInProgress = false;
-  }
-}
 
-let orderPollTimer = null;
+      // Cek email dari form utama atau dari kolom pendingEmailInput
+      const email = customerEmailInput.value.trim() || pendingEmailInput.value.trim();
 
-function startOrderPolling() {
-  if (orderPollTimer) return;
+      if (!email || !email.includes("@")) {
+        showMessage("Masukkan alamat email yang valid untuk pembayaran QRIS.");
+        if (!pendingEmailSection.classList.contains("hidden")) {
+          pendingEmailInput.focus();
+        } else {
+          customerEmailInput.focus();
+        }
+        return;
+      }
 
-  orderPollTimer = setInterval(refreshOrderStatus, 5000);
-}
+      const orderId = currentOrder.orderId || currentOrder.id || currentOrder.orderNumber;
 
-    async function restoreSavedOrder() {
-      const savedOrderId = sessionStorage.getItem("wifiOrderId");
-
-      if (!savedOrderId) return;
+      continueMidtransButton.disabled = true;
+      continueMidtransButton.textContent = "Menyiapkan QRIS Midtrans...";
+      clearMessage();
 
       try {
         const response = await fetch(
-          `/api/orders/${encodeURIComponent(savedOrderId)}`
+          `/api/payments/midtrans/${encodeURIComponent(orderId)}/create`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email })
+          }
         );
+
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-          if (response.status === 404) {
-            sessionStorage.removeItem("wifiOrderId");
-            sessionStorage.removeItem("wifiPaymentMethod");
-          }
-          return;
+          throw new Error(data.message || data.error || "Gagal menyiapkan Midtrans.");
         }
 
-        const data = await response.json();
-
-        currentOrder = {
-          orderId: data.id,
-          orderNumber: data.orderNumber,
-          status: data.status,
-          amount: data.amount,
-          price: Number(data.amount),
-          packageName: data.package.name || data.package.code,
-          paymentMethod:
-            sessionStorage.getItem("wifiPaymentMethod") || "MANUAL"
-        };
-
-        renderCurrentOrder(currentOrder);
-
-        createButton.disabled = true;
-        createButton.textContent = "Pesanan sudah dibuat";
+        if (data.token && window.snap) {
+          window.snap.pay(data.token, {
+            onSuccess: function() { refreshOrderStatus(); },
+            onPending: function() { refreshOrderStatus(); },
+            onError: function() { refreshOrderStatus(); },
+            onClose: function() { refreshOrderStatus(); }
+          });
+        } else if (data.redirectUrl) {
+          window.location.assign(data.redirectUrl);
+        } else {
+          throw new Error("Token pembayaran Midtrans tidak ditemukan.");
+        }
       } catch (error) {
-        showMessage(
-          "Detail pesanan belum bisa dimuat. Coba refresh kembali."
-        );
+        showMessage(error instanceof Error ? error.message : "Gagal membuka QRIS.");
+      } finally {
+        continueMidtransButton.disabled = false;
+        continueMidtransButton.textContent = "Bayar QRIS Sekarang (Midtrans)";
       }
     }
 
     async function loadPackages() {
       try {
         const response = await fetch("/api/packages");
-        if (!response.ok) {
-          throw new Error("Gagal mengambil daftar paket.");
-        }
-
-        const data = await response.json();
-        packages = Array.isArray(data)
-          ? data
-          : Array.isArray(data.packages)
-            ? data.packages
-            : [];
-
+        if (!response.ok) throw new Error("Gagal mengambil daftar paket");
+        packages = await response.json();
         renderPackages();
-      } catch (error) {
+      } catch (err) {
         packageContainer.innerHTML =
-          '<div class="notice">Daftar paket gagal dimuat. Coba muat ulang halaman.</div>';
+          '<div class="notice">Gagal memuat daftar paket. Muat ulang halaman.</div>';
       }
     }
 
-    document.querySelectorAll('input[name="payment"]').forEach(input => {
-      input.addEventListener("change", () => {
-        document.querySelectorAll(".method").forEach(label => {
-          label.classList.toggle(
-            "selected",
-            label.dataset.method === input.value
-          );
-        });
-      });
-    });
+    async function handleCreateOrder() {
+      if (!selectedPackage) return;
 
-    
-    createButton.addEventListener("click", async () => {
-      if (!selectedPackage) {
-        showMessage("Pilih paket terlebih dahulu.");
+      const email = customerEmailInput.value.trim();
+      if (!email || !email.includes("@")) {
+        showMessage("Harap isi alamat email yang valid sebelum membuat pesanan.");
+        customerEmailInput.focus();
         return;
       }
 
-      if (currentOrder) {
-        showMessage("Pesanan sudah dibuat. Jangan membuat pesanan yang sama lagi.");
-        return;
+      if (!pendingOrderAttempt) {
+        pendingOrderAttempt = "order-" + Date.now() + "-" + Math.random().toString(36).substring(2, 12);
       }
-
-      const paymentMethod = document.querySelector(
-        'input[name="payment"]:checked'
-      ).value;
-
-      
-if (paymentMethod === "QRIS") {
-  const email = customerEmailInput.value.trim();
-
-  if (!email || !customerEmailInput.validity.valid) {
-    showMessage("Masukkan alamat email yang valid untuk pembayaran QRIS.");
-    customerEmailInput.focus();
-    return;
-  }
-}
-
-
-      const packageCode = selectedPackage.code;
-      const customerIdentifier =
-        document.getElementById("customer").value.trim();
-
-      // Jika request sebelumnya belum mendapat jawaban,
-      // gunakan kunci dan data yang sama saat mencoba lagi.
-      if (pendingOrderAttempt) {
-        if (
-          pendingOrderAttempt.packageCode !== packageCode ||
-          pendingOrderAttempt.customerIdentifier !== customerIdentifier
-        ) {
-          showMessage(
-            "Percobaan sebelumnya belum dipastikan hasilnya. " +
-            "Gunakan paket dan nomor WhatsApp yang sama untuk mencoba lagi."
-          );
-          return;
-        }
-      } else {
-        pendingOrderAttempt = {
-          idempotencyKey: crypto.randomUUID(),
-          packageCode,
-          customerIdentifier
-        };
-      }
-
-      const idempotencyKey = pendingOrderAttempt.idempotencyKey;
 
       createButton.disabled = true;
-      createButton.textContent = "Membuat pesanan...";
+      createButton.textContent = "Memproses pesanan...";
       clearMessage();
-      orderResult.classList.add("hidden");
-      continueButton.classList.add("hidden");
 
       try {
         const response = await fetch("/api/orders", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            packageCode,
-            customerIdentifier: customerIdentifier || undefined,
-            idempotencyKey
+            packageCode: selectedPackage.code,
+            idempotencyKey: pendingOrderAttempt,
+            customerIdentifier: customerPhoneInput.value.trim() || undefined
           })
         });
 
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
 
         if (!response.ok) {
-          // Server memberikan jawaban pasti bahwa request gagal.
-          pendingOrderAttempt = null;
-
-          throw new Error(
-            data.message || data.error || "Pesanan gagal dibuat."
-          );
+          throw new Error(data.message || data.error || "Gagal membuat pesanan.");
         }
-
-        
-        currentOrder = {
-          ...data,
-          paymentMethod,
-          packageName: selectedPackage.name || selectedPackage.code,
-          price: Number(data.amount)
-        };
-
-        sessionStorage.setItem("wifiOrderId", data.orderId);
-        sessionStorage.setItem("wifiPaymentMethod", paymentMethod);
 
         pendingOrderAttempt = null;
-
-renderCurrentOrder(currentOrder);
-
-if (paymentMethod === "QRIS") {
-  await createDuitkuInvoice();
-}
-
-} catch (error) {
-        showMessage(
-          error instanceof Error
-            ? error.message
-            : "Koneksi bermasalah. Coba ulangi dengan data yang sama."
-        );
+        renderCurrentOrder(data);
+      } catch (err) {
+        showMessage(err instanceof Error ? err.message : "Gagal membuat pesanan.");
       } finally {
-        if (currentOrder) {
-          createButton.disabled = true;
-          createButton.textContent = "Pesanan sudah dibuat";
-        } else {
-          createButton.disabled = false;
-          createButton.textContent = selectedPackage
+        createButton.disabled = false;
+        createButton.textContent =
+          selectedPackage
             ? `Buat Pesanan · ${formatRupiah(Number(selectedPackage.price))}`
             : "Pilih paket terlebih dahulu";
-        }
+      }
+    }
+
+    createButton.addEventListener("click", handleCreateOrder);
+    continueMidtransButton.addEventListener("click", createMidtransTransaction);
+    refreshOrderButton.addEventListener("click", refreshOrderStatus);
+
+    newOrderButton.addEventListener("click", () => {
+      clearOrderStorage();
+      currentOrder = null;
+      stopPolling();
+      orderResult.classList.add("hidden");
+      buyForm.classList.remove("hidden");
+      clearMessage();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
+    copyVoucherButton.addEventListener("click", () => {
+      const code = voucherCodeText.textContent;
+      if (code) {
+        navigator.clipboard.writeText(code).then(() => {
+          copyVoucherButton.textContent = "Tersalin!";
+          setTimeout(() => {
+            copyVoucherButton.textContent = "Salin Kode Voucher";
+          }, 2000);
+        });
       }
     });
 
-
-    continueButton.addEventListener("click", () => {
-      if (!currentOrder) return;
-
-      if (!/^62\d{8,15}$/.test(OWNER_WA)) {
-        showMessage(
-          "Nomor WhatsApp owner belum dikonfigurasi. Hubungi owner secara langsung."
-        );
-        return;
-      }
-
-      const text = [
-        "Halo Owner, saya ingin membayar voucher WiFi.",
-        `Nomor pesanan: ${currentOrder.orderNumber || currentOrder.orderId}`,
-        `Paket: ${currentOrder.packageName}`,
-        `Harga: ${formatRupiah(currentOrder.price)}`,
-        "",
-        "Mohon instruksi pembayaran. Terima kasih."
-      ].join("\n");
-
-      window.open(
-        `https://wa.me/${OWNER_WA}?text=${encodeURIComponent(text)}`,
-        "_blank",
-        "noopener,noreferrer"
-      );
-    });
-
-continueDuitkuButton.addEventListener("click", async () => {
-  await createDuitkuInvoice();
-});
-
-    copyVoucherButton.addEventListener("click", async () => {
-  const code = voucherCodeText.textContent.trim();
-
-  if (!code) return;
-
-  try {
-    await navigator.clipboard.writeText(code);
-    copyVoucherButton.textContent = "Kode Berhasil Disalin!";
-  } catch (error) {
-    showMessage(
-      "Kode belum bisa disalin otomatis. Silakan salin kode voucher secara manual."
-    );
-  }
-});
-    
     loadPackages();
-    restoreSavedOrder();
-    startOrderPolling();
 
+    const savedOrder = getOrderFromStorage();
+    if (savedOrder) {
+      renderCurrentOrder(savedOrder);
+      refreshOrderStatus();
+    }
   </script>
 </body>
 </html>

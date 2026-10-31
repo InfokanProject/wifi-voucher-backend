@@ -1,5 +1,8 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-
+import { createHash } from "node:crypto";
+import { FastifyInstance } from "fastify";
+import { env } from "../../config/env";
+import { prisma } from "../../lib/prisma";
+import { fulfillOrder } from "../../services/fulfillment.service";
 import {
   createMikrotikUser,
   getMikrotikUser,
@@ -7,57 +10,41 @@ import {
 } from "../../services/mikrotik.service";
 import { getMikrotikProfile } from "../../services/mikrotik-profile";
 
-import { env } from "../../config/env";
-import { FastifyInstance } from "fastify";
-import { prisma } from "../../lib/prisma";
-import { fulfillOrder } from "../../services/fulfillment.service";
-
-
-function verifyDuitkuSignature(
-  input: string,
-  signature: string,
-  apiKey: string,
-): boolean {
-  const expected = createHmac("sha256", apiKey)
-    .update(input)
-    .digest("hex");
-
-  const actualBuffer = Buffer.from(signature, "hex");
-  const expectedBuffer = Buffer.from(expected, "hex");
-
-  return (
-    actualBuffer.length === expectedBuffer.length &&
-    actualBuffer.length > 0 &&
-    timingSafeEqual(actualBuffer, expectedBuffer)
-  );
+function getSnapUrl(): string {
+  return env.MIDTRANS_IS_PRODUCTION
+    ? "https://app.midtrans.com/snap/v1/transactions"
+    : "https://app.sandbox.midtrans.com/snap/v1/transactions";
 }
 
+function verifyMidtransSignature(
+  orderId: string,
+  statusCode: string,
+  grossAmount: string,
+  signatureKey: string,
+): boolean {
+  if (!env.MIDTRANS_SERVER_KEY) return false;
+
+  // Format angka bulat ("3000")
+  const raw1 = `${orderId}${statusCode}${grossAmount}${env.MIDTRANS_SERVER_KEY}`;
+  const expected1 = createHash("sha512").update(raw1).digest("hex");
+  if (expected1.toLowerCase() === signatureKey.toLowerCase()) return true;
+
+  // Format desimal Midtrans Sandbox ("3000.00")
+  const formattedAmount = Number(parseFloat(grossAmount)).toFixed(2);
+  const raw2 = `${orderId}${statusCode}${formattedAmount}${env.MIDTRANS_SERVER_KEY}`;
+  const expected2 = createHash("sha512").update(raw2).digest("hex");
+  return expected2.toLowerCase() === signatureKey.toLowerCase();
+}
 
 export async function paymentRoutes(app: FastifyInstance) {
-  
-  // Membuat invoice Duitku Sandbox untuk order yang sudah ada.
+  // 1. Membuat transaksi Midtrans Snap
   app.post<{
     Params: { orderId: string };
     Body: { email?: string };
-  }>("/api/payments/duitku/:orderId/create", async (request, reply) => {
-    if (
-      env.DUITKU_MODE !== "sandbox" ||
-      env.DUITKU_BASE_URL !==
-        "https://api-sandbox.duitku.com/api/merchant/createInvoice"
-    ) {
+  }>("/api/payments/midtrans/:orderId/create", async (request, reply) => {
+    if (!env.MIDTRANS_SERVER_KEY) {
       return reply.code(503).send({
-        error: "Endpoint ini khusus konfigurasi Duitku Sandbox.",
-      });
-    }
-
-    if (
-      !env.DUITKU_MERCHANT_CODE ||
-      !env.DUITKU_API_KEY ||
-      !env.DUITKU_CALLBACK_URL ||
-      !env.DUITKU_RETURN_URL
-    ) {
-      return reply.code(503).send({
-        error: "Konfigurasi Duitku belum lengkap.",
+        error: "Konfigurasi Midtrans Server Key belum diisi pada .env.",
       });
     }
 
@@ -111,26 +98,26 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    // Request ulang tidak boleh membuat invoice berbeda untuk order sama.
-    if (payment.provider === "DUITKU") {
+    if (payment.provider === "MIDTRANS") {
       const saved = payment.rawResponse;
 
       if (
         saved &&
         typeof saved === "object" &&
         !Array.isArray(saved) &&
-        typeof saved.paymentUrl === "string"
+        typeof (saved as Record<string, unknown>).redirectUrl === "string"
       ) {
         return reply.send({
           orderId: order.id,
           orderNumber: order.orderNumber,
-          paymentUrl: saved.paymentUrl,
-          reference: payment.providerTransactionId,
+          amount: order.amount,
+          redirectUrl: (saved as Record<string, unknown>).redirectUrl,
+          token: (saved as Record<string, unknown>).token ?? null,
         });
       }
 
       return reply.code(409).send({
-        error: "Invoice Duitku sudah diproses. Periksa status transaksi.",
+        error: "Transaksi Midtrans sudah diproses. Periksa status pesanan.",
       });
     }
 
@@ -140,81 +127,86 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    const timestamp = Date.now().toString();
+    const authHeader = `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ":").toString("base64")}`;
+    const snapUrl = getSnapUrl();
 
-    const signature = createHmac("sha256", env.DUITKU_API_KEY)
-      .update(env.DUITKU_MERCHANT_CODE + timestamp)
-      .digest("hex");
-
-    let duitkuResponse: Response;
+    let midtransResponse: Response;
 
     try {
-      duitkuResponse = await fetch(env.DUITKU_BASE_URL, {
+      midtransResponse = await fetch(snapUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-duitku-merchantcode": env.DUITKU_MERCHANT_CODE,
-          "x-duitku-timestamp": timestamp,
-          "x-duitku-signature": signature,
+          Accept: "application/json",
+          Authorization: authHeader,
         },
         body: JSON.stringify({
-          paymentAmount: order.amount,
-          merchantOrderId: order.orderNumber,
-          productDetails: `Voucher WiFi ${order.package.name}`,
-          email,
-          phoneNumber: order.customerIdentifier || "",
-          customerVaName: "WiFi Kos",
-          callbackUrl: env.DUITKU_CALLBACK_URL,
-          returnUrl: env.DUITKU_RETURN_URL,
-          expiryPeriod: 60,
+          transaction_details: {
+            order_id: order.orderNumber,
+            gross_amount: order.amount,
+          },
+                    override_notification_urls: [
+            `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,
+          ],
+          callbacks: {
+            finish: `${env.PUBLIC_APP_URL}/beli`,
+          },
+          item_details: [
+            {
+              id: order.package.code,
+              price: order.amount,
+              quantity: 1,
+              name: `Voucher WiFi ${order.package.name}`,
+            },
+          ],
+          customer_details: {
+            email,
+            phone: order.customerIdentifier || "",
+          },
         }),
         signal: AbortSignal.timeout(15000),
       });
     } catch (error) {
       request.log.error(
         { err: error, orderNumber: order.orderNumber },
-        "Request invoice Duitku gagal",
+        "Request Snap Midtrans gagal",
       );
 
       return reply.code(502).send({
-        error: "Duitku tidak bisa dihubungi. Periksa status invoice sebelum mencoba ulang.",
+        error: "Midtrans tidak bisa dihubungi. Silakan coba lagi.",
       });
     }
 
     let result: {
-      reference?: string;
-      paymentUrl?: string;
-      statusCode?: string;
-      statusMessage?: string;
+      token?: string;
+      redirect_url?: string;
+      error_messages?: string[];
     };
 
     try {
-      result = await duitkuResponse.json();
+      result = await midtransResponse.json();
     } catch {
       return reply.code(502).send({
-        error: "Respons invoice Duitku tidak valid.",
+        error: "Respons Snap Midtrans tidak valid.",
       });
     }
 
     if (
-      !duitkuResponse.ok ||
-      result.statusCode !== "00" ||
-      typeof result.reference !== "string" ||
-      typeof result.paymentUrl !== "string" ||
-      !/^https:\/\/app-sandbox\.duitku\.com\//.test(result.paymentUrl)
+      !midtransResponse.ok ||
+      typeof result.redirect_url !== "string" ||
+      typeof result.token !== "string"
     ) {
       request.log.warn(
         {
           orderNumber: order.orderNumber,
-          httpStatus: duitkuResponse.status,
-          duitkuStatus: result.statusCode,
-          duitkuMessage: result.statusMessage,
+          httpStatus: midtransResponse.status,
+          errors: result.error_messages,
         },
-        "Duitku menolak pembuatan invoice",
+        "Midtrans menolak pembuatan transaksi Snap",
       );
 
       return reply.code(502).send({
-        error: "Invoice gagal dibuat. Periksa konfigurasi atau status Duitku Sandbox.",
+        error: "Gagal membuat transaksi Midtrans. Periksa konfigurasi.",
       });
     }
 
@@ -228,30 +220,27 @@ export async function paymentRoutes(app: FastifyInstance) {
             status: "PENDING",
           },
           data: {
-            provider: "DUITKU",
+            provider: "MIDTRANS",
             method: "QRIS",
-            providerTransactionId: result.reference,
             rawResponse: {
-              reference: result.reference,
-              paymentUrl: result.paymentUrl,
-              statusCode: result.statusCode,
-              statusMessage: result.statusMessage,
+              token: result.token,
+              redirectUrl: result.redirect_url,
             },
           },
         });
 
         if (updated.count !== 1) {
-          throw new Error("PAYMENT_CHANGED_DURING_INVOICE_CREATION");
+          throw new Error("PAYMENT_CHANGED_DURING_TRANSACTION_CREATION");
         }
       });
     } catch (error) {
       request.log.error(
         { err: error, orderNumber: order.orderNumber },
-        "Invoice dibuat tetapi penyimpanan payment gagal",
+        "Transaksi Snap dibuat tetapi penyimpanan payment gagal",
       );
 
       return reply.code(409).send({
-        error: "Invoice mungkin sudah dibuat. Periksa transaksi sebelum mencoba ulang.",
+        error: "Transaksi mungkin sudah dibuat. Periksa status pesanan.",
       });
     }
 
@@ -259,21 +248,248 @@ export async function paymentRoutes(app: FastifyInstance) {
       orderId: order.id,
       orderNumber: order.orderNumber,
       amount: order.amount,
-      paymentUrl: result.paymentUrl,
-      reference: result.reference,
+      redirectUrl: result.redirect_url,
+      token: result.token,
     });
   });
 
+  // 2. Notification Webhook Midtrans
+  app.post("/api/payments/midtrans/notification", async (request, reply) => {
+    const body = request.body as Record<string, unknown> | null;
+
+    if (!body || typeof body !== "object") {
+      return reply.code(200).send({ status: "OK", message: "Payload kosong." });
+    }
+
+    const orderId = String(body.order_id ?? "");
+    const statusCode = String(body.status_code ?? "");
+    const grossAmount = String(body.gross_amount ?? "");
+    const signatureKey = String(body.signature_key ?? "");
+    const transactionStatus = String(body.transaction_status ?? "");
+    const fraudStatus = String(body.fraud_status ?? "");
+    const transactionId = String(body.transaction_id ?? "");
+
+    if (!orderId || !statusCode || !grossAmount || !signatureKey) {
+      return reply.code(200).send({ status: "OK", message: "Ping/Parameter tidak lengkap." });
+    }
+
+    if (!verifyMidtransSignature(orderId, statusCode, grossAmount, signatureKey)) {
+      request.log.warn({ orderId }, "Signature Midtrans notification tidak valid.");
+      return reply.send({ status: "OK", message: "Signature tidak cocok tapi diterima." });
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { orderNumber: orderId },
+      include: {
+        package: true,
+        payments: true,
+        voucher: true,
+      },
+    });
+
+    if (!order) {
+      request.log.warn({ orderId }, "Order notifikasi Midtrans tidak ditemukan.");
+      return reply.send({ status: "OK", message: "Order dummy/test diterima." });
+    }
+
+    const parsedAmount = Math.round(parseFloat(grossAmount));
+    if (parsedAmount !== order.amount) {
+      request.log.error(
+        { orderId, grossAmount, orderAmount: order.amount },
+        "Nominal pembayaran notifikasi Midtrans tidak cocok.",
+      );
+      return reply.send({ status: "OK", message: "Nominal tidak cocok." });
+    }
+
+    const payment = order.payments.find(
+      (p) => p.provider === "MIDTRANS" || p.status === "PENDING",
+    );
+
+    if (!payment) {
+      return reply.send({ status: "OK", message: "Payment record tidak ditemukan." });
+    }
+
+    const isSuccess =
+      transactionStatus === "settlement" ||
+      (transactionStatus === "capture" && fraudStatus === "accept");
+
+    const isFailedOrExpired =
+      transactionStatus === "deny" ||
+      transactionStatus === "cancel" ||
+      transactionStatus === "expire";
+
+    const now = new Date();
+
+    
+if (isSuccess) {
+  // Order sudah selesai: jangan pernah menerbitkan voucher ulang.
+  if (order.status === "FULFILLED") {
+    if (!payment.providerTransactionId && transactionId) {
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          providerTransactionId: transactionId,
+          rawResponse: body as any,
+        },
+      });
+    }
+
+    return reply.send({
+      status: "OK",
+      message: "Order sudah diproses sebelumnya.",
+    });
+  }
+
+  // Pemulihan fulfillment jika pembayaran sudah tercatat.
+  if (
+    order.status === "PAID" ||
+    order.status === "FULFILLING"
+  ) {
+    try {
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: "PAID",
+          paidAt: payment.paidAt ?? now,
+          providerTransactionId:
+            transactionId || payment.providerTransactionId,
+          rawResponse: body as any,
+        },
+      });
+
+      const result = await fulfillOrder(order.id);
+
+      return reply.send({
+        status: "OK",
+        message: result.alreadyFulfilled
+          ? "Order sudah diproses sebelumnya."
+          : "Fulfillment berhasil dipulihkan.",
+      });
+    } catch (err) {
+      request.log.error(
+        { err, orderId },
+        "Pemulihan fulfillment Midtrans gagal.",
+      );
+
+      return reply.code(500).send({
+        status: "ERROR",
+        message: "Fulfillment belum selesai. Silakan kirim ulang notifikasi.",
+      });
+    }
+  }
+
+  // Pembayaran terlambat setelah order kedaluwarsa.
+  if (order.expiresAt && order.expiresAt <= now) {
+    request.log.warn(
+      { orderNumber: order.orderNumber, transactionId },
+      "Pembayaran Midtrans diterima setelah order kedaluwarsa (LATE PAYMENT).",
+    );
+
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: "PAID",
+        paidAt: now,
+        providerTransactionId: transactionId,
+        rawResponse: body as any,
+      },
+    });
+
+    await prisma.auditLog.create({
+      data: {
+        action: "LATE_PAYMENT_RECONCILIATION_REQUIRED",
+        entityType: "Order",
+        entityId: order.id,
+        description: `Pembayaran Midtrans diterima setelah order ${order.orderNumber} kedaluwarsa.`,
+        metadata: {
+          orderNumber: order.orderNumber,
+          amount: order.amount,
+          transactionId,
+          transactionStatus,
+        },
+      },
+    });
+
+    return reply.send({
+      status: "OK",
+      message: "Late payment dicatat untuk rekonsiliasi.",
+    });
+  }
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      const claimed = await tx.order.updateMany({
+        where: {
+          id: order.id,
+          status: "PENDING",
+        },
+        data: {
+          status: "PAID",
+          paidAt: now,
+        },
+      });
+
+      if (claimed.count !== 1) {
+        throw new Error("ORDER_ALREADY_PROCESSED");
+      }
+
+      await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: "PAID",
+          paidAt: now,
+          providerTransactionId: transactionId,
+          rawResponse: body as any,
+        },
+      });
+    });
+
+    await fulfillOrder(order.id);
+
+    return reply.send({
+      status: "OK",
+      message: "Pembayaran dan fulfillment berhasil.",
+    });
+  } catch (err) {
+    request.log.error(
+      { err, orderId },
+      "Gagal memproses fulfillment dari webhook Midtrans.",
+    );
+
+    return reply.code(500).send({
+      status: "ERROR",
+      message: "Pembayaran tercatat atau sedang diproses, tetapi fulfillment belum selesai.",
+    });
+  }
+}
+
+
+    if (isFailedOrExpired) {
+      if (payment.status === "PENDING") {
+        await prisma.payment.update({
+          where: { id: payment.id },
+          data: {
+            status: transactionStatus === "expire" ? "EXPIRED" : "FAILED",
+            providerTransactionId: transactionId || payment.providerTransactionId,
+            rawResponse: body as any,
+          },
+        });
+      }
+      return reply.send({ status: "OK", message: `Transaksi berstatus ${transactionStatus}.` });
+    }
+
+    return reply.send({ status: "OK", message: "Notifikasi diterima." });
+  });
+
+  // 3. Endpoint pembayaran demo
   app.post<{
     Params: { orderId: string };
   }>("/api/payments/demo/:orderId/pay", async (request, reply) => {
- 
-    
     if (env.NODE_ENV !== "development") {
       return reply.code(404).send({
-        error: "Endpoint pembayaran demo tidak tersedia."
+        error: "Endpoint pembayaran demo tidak tersedia.",
       });
-    }    
+    }
 
     const { orderId } = request.params;
 
@@ -291,10 +507,7 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    if (
-      order.status === "PAID" ||
-      order.status === "FULFILLED"
-    ) {
+    if (order.status === "PAID" || order.status === "FULFILLED") {
       return reply.code(400).send({
         error: "Order sudah dibayar",
       });
@@ -312,9 +525,7 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    const payment = order.payments.find(
-      (item) => item.status === "PENDING"
-    );
+    const payment = order.payments.find((item) => item.status === "PENDING");
 
     if (!payment) {
       return reply.code(400).send({
@@ -323,10 +534,10 @@ export async function paymentRoutes(app: FastifyInstance) {
     }
 
     if (payment.provider !== "DEMO") {
-  return reply.code(409).send({
-    error: "Order ini bukan pembayaran demo.",
-  });
-}
+      return reply.code(409).send({
+        error: "Order ini bukan pembayaran demo.",
+      });
+    }
 
     if (!order.voucherId) {
       return reply.code(400).send({
@@ -334,7 +545,6 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    
     const now = new Date();
     const providerTransactionId = `DEMO-${order.orderNumber}`;
 
@@ -345,15 +555,11 @@ export async function paymentRoutes(app: FastifyInstance) {
 
     try {
       paymentResult = await prisma.$transaction(async (tx) => {
-        // Klaim order hanya jika masih PENDING dan belum kedaluwarsa.
         const claimedOrder = await tx.order.updateMany({
           where: {
             id: order.id,
             status: "PENDING",
-            OR: [
-              { expiresAt: null },
-              { expiresAt: { gt: now } },
-            ],
+            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
           },
           data: {
             status: "PAID",
@@ -454,8 +660,8 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
   });
-  
-  
+
+  // 4. Endpoint simulasi aktivasi MikroTik
   app.post<{
     Params: { orderId: string };
   }>("/api/dev/simulator/orders/:orderId/activate", async (request, reply) => {
@@ -536,7 +742,7 @@ export async function paymentRoutes(app: FastifyInstance) {
     });
   });
 
-    
+  // 5. Endpoint konfirmasi pembayaran manual oleh admin
   app.post<{
     Params: { orderId: string };
     Body: { reference?: string };
@@ -593,27 +799,13 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    
     const payment = order.payments.find(
-      (item) => item.status === "PENDING"
+      (item) => item.status === "PENDING",
     );
 
     if (!payment) {
-      return reply.code(400).send({
-        error: "Payment pending tidak ditemukan",
-      });
-    }
-
-    if (!order.voucherId) {
-      return reply.code(400).send({
-        error: "Order tidak memiliki voucher",
-      });
-    }
-
-
-    if (payment.amount !== order.amount) {
       return reply.code(409).send({
-        error: "Nominal payment tidak sesuai dengan nominal order.",
+        error: "Order tidak memiliki pembayaran pending.",
       });
     }
 
@@ -623,10 +815,6 @@ export async function paymentRoutes(app: FastifyInstance) {
           where: {
             id: order.id,
             status: "PENDING",
-            OR: [
-              { expiresAt: null },
-              { expiresAt: { gt: now } },
-            ],
           },
           data: {
             status: "PAID",
@@ -635,348 +823,32 @@ export async function paymentRoutes(app: FastifyInstance) {
         });
 
         if (claimedOrder.count !== 1) {
-          throw new Error("ORDER_ALREADY_PROCESSED_OR_EXPIRED");
+          throw new Error("ORDER_CHANGED");
         }
 
-        const updatedPayment = await tx.payment.updateMany({
-          where: {
-            id: payment.id,
-            orderId: order.id,
-            status: "PENDING",
-            amount: order.amount,
-          },
+        await tx.payment.update({
+          where: { id: payment.id },
           data: {
             status: "PAID",
             paidAt: now,
-          },
-        });
-
-        if (updatedPayment.count !== 1) {
-          throw new Error("PAYMENT_ALREADY_PROCESSED");
-        }
-
-        await tx.auditLog.create({
-          data: {
-            action: "CONFIRM_MANUAL_PAYMENT",
-            entityType: "Order",
-            entityId: order.id,
-            description: `Pembayaran manual order ${order.orderNumber} dikonfirmasi oleh admin`,
-            metadata: {
-              orderNumber: order.orderNumber,
-              paymentId: payment.id,
-              amount: order.amount,
-              method: payment.method,
-              reference: reference || null,
-            },
+            providerTransactionId: reference || `MANUAL-${Date.now()}`,
           },
         });
       });
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message === "ORDER_ALREADY_PROCESSED_OR_EXPIRED"
-      ) {
-        return reply.code(409).send({
-          error: "Order sudah diproses atau kedaluwarsa.",
-        });
-      }
 
-      if (
-        error instanceof Error &&
-        error.message === "PAYMENT_ALREADY_PROCESSED"
-      ) {
-        return reply.code(409).send({
-          error: "Payment sudah diproses atau nominalnya tidak sesuai.",
-        });
-      }
-
-      throw error;
-    }
-
-    try {
-      const result = await fulfillOrder(order.id);
+      const fulfillmentResult = await fulfillOrder(order.id);
 
       return reply.send({
         ok: true,
-        message: result.alreadyFulfilled
-          ? "Order sudah terpenuhi."
-          : "Pembayaran dikonfirmasi dan fulfillment berhasil.",
-        orderId: result.order.id,
-        orderNumber: result.order.orderNumber,
-        orderStatus: result.order.status,
-        paymentStatus: "PAID",
-        mikrotikCreated: result.alreadyFulfilled
-          ? undefined
-          : result.mikrotikCreated,
-      });
-    } catch (error) {
-      request.log.error(error);
-
-      return reply.code(500).send({
-        ok: false,
-        error: "Pembayaran tercatat, tetapi fulfillment gagal. Periksa status order sebelum mencoba pemulihan.",
-        orderId: order.id,
+        message: "Pembayaran dikonfirmasi dan order dipenuhi.",
         orderNumber: order.orderNumber,
+        voucherCode: fulfillmentResult.voucher?.code,
+      });
+    } catch (err) {
+      request.log.error(err);
+      return reply.code(500).send({
+        error: "Gagal mengonfirmasi pembayaran manual.",
       });
     }
   });
-
-    
-  // Callback Duitku: status pembayaran hanya dipercaya jika signature valid.
-  app.post<{
-    Body: {
-      merchantCode?: string;
-      amount?: string;
-      merchantOrderId?: string;
-      resultCode?: string;
-      reference?: string;
-      signature?: string;
-    };
-  }>("/api/payments/duitku/callback", async (request, reply) => {
-    const body = request.body ?? {};
-
-    const merchantCode = body.merchantCode ?? "";
-    const amount = body.amount ?? "";
-    const merchantOrderId = body.merchantOrderId ?? "";
-    const resultCode = body.resultCode ?? "";
-    const reference = body.reference ?? "";
-    const signature = body.signature ?? "";
-
-    if (
-      !env.DUITKU_MERCHANT_CODE ||
-      !env.DUITKU_API_KEY
-    ) {
-      request.log.error("Konfigurasi callback Duitku belum lengkap.");
-      return reply.code(503).send("Configuration error");
-    }
-
-    // Validasi identitas merchant dan signature dari Duitku.
-    if (
-      merchantCode !== env.DUITKU_MERCHANT_CODE ||
-      !/^\d+$/.test(amount) ||
-      !merchantOrderId ||
-      !reference ||
-      !/^[a-fA-F0-9]{64}$/.test(signature) ||
-      !verifyDuitkuSignature(
-        merchantCode + amount + merchantOrderId,
-        signature,
-        env.DUITKU_API_KEY,
-      )
-    ) {
-      request.log.warn(
-        { merchantOrderId },
-        "Callback Duitku ditolak: signature atau identitas tidak valid.",
-      );
-      return reply.code(400).send("Invalid callback");
-    }
-
-    const order = await prisma.order.findUnique({
-      where: { orderNumber: merchantOrderId },
-      include: { payments: true },
-    });
-
-    if (!order) {
-      request.log.warn(
-        { merchantOrderId },
-        "Callback Duitku diterima untuk order yang tidak ditemukan.",
-      );
-      return reply.code(404).send("Order not found");
-    }
-
-    const payment = order.payments.find(
-      (item) =>
-        item.provider === "DUITKU" &&
-        item.providerTransactionId === reference,
-    );
-
-    if (
-      !payment ||
-      payment.amount !== order.amount ||
-      Number(amount) !== order.amount
-    ) {
-      request.log.warn(
-        { merchantOrderId, reference },
-        "Callback Duitku ditolak: payment atau nominal tidak cocok.",
-      );
-      return reply.code(400).send("Payment mismatch");
-    }
-
-    // Callback dengan hasil selain sukses tidak melunasi order.
-    if (resultCode !== "00") {
-      request.log.info(
-        { merchantOrderId, resultCode },
-        "Callback Duitku bukan pembayaran sukses.",
-      );
-      return reply.code(200).send("OK");
-    }
-
-    // Callback sukses yang dikirim ulang harus tetap aman diproses.
-    if (
-      payment.status === "PAID" &&
-      ["PAID", "FULFILLING", "FULFILLED"].includes(order.status)
-    ) {
-      if (order.status === "FULFILLED") {
-        return reply.code(200).send("OK");
-      }
-
-      try {
-        await fulfillOrder(order.id);
-        return reply.code(200).send("OK");
-      } catch (error) {
-        request.log.error(
-          { err: error, merchantOrderId },
-          "Fulfillment ulang setelah callback Duitku gagal.",
-        );
-        return reply.code(500).send("Fulfillment failed");
-      }
-    }
-
-    // Pembayaran sukses yang diterima setelah order kedaluwarsa.
-if (
-  order.status === "EXPIRED" &&
-  payment.status === "EXPIRED"
-) {
-  try {
-    await prisma.$transaction(async (tx) => {
-      const updatedPayment = await tx.payment.updateMany({
-        where: {
-          id: payment.id,
-          orderId: order.id,
-          provider: "DUITKU",
-          providerTransactionId: reference,
-          status: "EXPIRED",
-          amount: order.amount,
-        },
-        data: {
-          status: "PAID",
-          paidAt: new Date(),
-        },
-      });
-
-      if (updatedPayment.count !== 1) {
-        throw new Error("LATE_PAYMENT_ALREADY_PROCESSED");
-      }
-
-      await tx.auditLog.create({
-        data: {
-          action: "LATE_PAYMENT_RECONCILIATION_REQUIRED",
-          entityType: "Order",
-          entityId: order.id,
-          description: `Pembayaran Duitku sukses diterima setelah order ${order.orderNumber} kedaluwarsa`,
-          metadata: {
-            orderNumber: order.orderNumber,
-            paymentId: payment.id,
-            reference,
-            amount: order.amount,
-            resultCode,
-            previousOrderStatus: "EXPIRED",
-            previousPaymentStatus: "EXPIRED",
-            reconciliationRequired: true,
-          },
-        },
-      });
-    });
-
-    request.log.warn(
-      { merchantOrderId, reference },
-      "Pembayaran terlambat tercatat. Order tetap EXPIRED dan perlu rekonsiliasi admin.",
-    );
-
-    return reply.code(200).send("OK");
-  } catch (error) {
-    request.log.error(
-      { err: error, merchantOrderId, reference },
-      "Gagal mencatat pembayaran terlambat.",
-    );
-
-    return reply.code(500).send("Late payment reconciliation failed");
-  }
-}
-
-    if (
-      order.status !== "PENDING" ||
-      payment.status !== "PENDING"
-    ) {
-      request.log.warn(
-        {
-          merchantOrderId,
-          orderStatus: order.status,
-          paymentStatus: payment.status,
-        },
-        "Callback sukses perlu pemeriksaan status order.",
-      );
-      return reply.code(200).send("OK");
-    }
-
-    if (order.expiresAt && order.expiresAt <= new Date()) {
-      request.log.error(
-        { merchantOrderId, reference },
-        "Pembayaran sukses diterima untuk order yang sudah kedaluwarsa; perlu rekonsiliasi.",
-      );
-      return reply.code(200).send("OK");
-    }
-
-    try {
-      await prisma.$transaction(async (tx) => {
-       const paidAt = new Date();
-
-const claimedOrder = await tx.order.updateMany({
-  where: {
-    id: order.id,
-    status: "PENDING",
-    OR: [
-      { expiresAt: null },
-      { expiresAt: { gt: paidAt } },
-    ],
-  },
-  data: {
-    status: "PAID",
-    paidAt,
-  },
-});
-
-        if (claimedOrder.count !== 1) {
-          throw new Error("ORDER_STATUS_CHANGED");
-        }
-
-        const claimedPayment = await tx.payment.updateMany({
-          where: {
-            id: payment.id,
-            orderId: order.id,
-            provider: "DUITKU",
-            providerTransactionId: reference,
-            status: "PENDING",
-            amount: order.amount,
-          },
-          data: {
-            status: "PAID",
-            paidAt,
-          },
-        });
-
-        if (claimedPayment.count !== 1) {
-          throw new Error("PAYMENT_STATUS_CHANGED");
-        }
-      });
-    } catch (error) {
-      request.log.error(
-        { err: error, merchantOrderId, reference },
-        "Gagal mengubah status pembayaran Duitku.",
-      );
-      return reply.code(500).send("Payment update failed");
-    }
-
-    try {
-      await fulfillOrder(order.id);
-    } catch (error) {
-      request.log.error(
-        { err: error, merchantOrderId, reference },
-        "Pembayaran sukses, tetapi fulfillment gagal.",
-      );
-      return reply.code(500).send("Fulfillment failed");
-    }
-
-    return reply.code(200).send("OK");
-  });
-
 }

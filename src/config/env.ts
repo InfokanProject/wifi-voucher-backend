@@ -2,10 +2,21 @@
 import "dotenv/config";
 
 const mikrotikMode = process.env.MIKROTIK_MODE ?? "real";
+const midtransProductionRaw =
+  process.env.MIDTRANS_IS_PRODUCTION ?? "false";
 
 if (mikrotikMode !== "real" && mikrotikMode !== "simulator") {
   throw new Error(
     'MIKROTIK_MODE harus bernilai "real" atau "simulator".'
+  );
+}
+
+if (
+  midtransProductionRaw !== "true" &&
+  midtransProductionRaw !== "false"
+) {
+  throw new Error(
+    'MIDTRANS_IS_PRODUCTION harus bernilai "true" atau "false".'
   );
 }
 
@@ -14,6 +25,7 @@ export const env = {
   PORT: Number(process.env.PORT ?? 3000),
   HOST: process.env.HOST ?? "0.0.0.0",
   NODE_ENV: process.env.NODE_ENV ?? "development",
+  PUBLIC_APP_URL: (process.env.PUBLIC_APP_URL ?? "").trim().replace(/\/+$/, ""),
 
   MIKROTIK_MODE: mikrotikMode as "real" | "simulator",
   MIKROTIK_HOST: process.env.MIKROTIK_HOST ?? "",
@@ -21,14 +33,9 @@ export const env = {
   MIKROTIK_USERNAME: process.env.MIKROTIK_USERNAME ?? "",
   MIKROTIK_PASSWORD: process.env.MIKROTIK_PASSWORD ?? "",
 
-    DUITKU_MODE: process.env.DUITKU_MODE ?? "sandbox",
-  DUITKU_MERCHANT_CODE: process.env.DUITKU_MERCHANT_CODE ?? "",
-  DUITKU_API_KEY: process.env.DUITKU_API_KEY ?? "",
-  DUITKU_BASE_URL:
-    process.env.DUITKU_BASE_URL ??
-    "https://api-sandbox.duitku.com/api/merchant/createInvoice",
-  DUITKU_CALLBACK_URL: process.env.DUITKU_CALLBACK_URL ?? "",
-  DUITKU_RETURN_URL: process.env.DUITKU_RETURN_URL ?? "",
+  MIDTRANS_IS_PRODUCTION: midtransProductionRaw === "true",
+  MIDTRANS_SERVER_KEY: process.env.MIDTRANS_SERVER_KEY ?? "",
+  MIDTRANS_CLIENT_KEY: process.env.MIDTRANS_CLIENT_KEY ?? "",
 
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ?? "",
   SESSION_SECRET: process.env.SESSION_SECRET ?? "",
@@ -38,15 +45,19 @@ if (!env.DATABASE_URL) {
   throw new Error("DATABASE_URL belum di-set.");
 }
 
+if (!env.MIDTRANS_SERVER_KEY || !env.MIDTRANS_CLIENT_KEY) {
+  throw new Error(
+    "Konfigurasi MIDTRANS_SERVER_KEY dan MIDTRANS_CLIENT_KEY belum lengkap."
+  );
+}
+
 if (env.MIKROTIK_MODE === "real") {
   if (
     !env.MIKROTIK_HOST ||
     !env.MIKROTIK_USERNAME ||
     !env.MIKROTIK_PASSWORD
   ) {
-    throw new Error(
-      "Konfigurasi MikroTik belum lengkap."
-    );
+    throw new Error("Konfigurasi MikroTik belum lengkap.");
   }
 }
 

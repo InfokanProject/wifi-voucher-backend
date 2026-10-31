@@ -1,9 +1,10 @@
 import { FastifyInstance } from "fastify";
 import { prisma } from "../../lib/prisma";
 import { makeOrderNumber } from "../../utils/order-number";
+import { env } from "../../config/env";
+import { fulfillOrder } from "../../services/fulfillment.service";
 
 export async function orderRoutes(app: FastifyInstance) {
-  
   // Membuat order dengan idempotency key dan reservasi voucher 15 menit.
   app.post<{
     Body: {
@@ -158,8 +159,6 @@ export async function orderRoutes(app: FastifyInstance) {
         expiresAt: result.expiresAt,
       });
     } catch (error) {
-      // Jika request bersamaan memakai kunci sama, transaksi
-      // yang kalah dibatalkan; ambil order yang berhasil dibuat.
       const code = (error as { code?: string }).code;
 
       if (code === "P2002") {
@@ -205,8 +204,327 @@ export async function orderRoutes(app: FastifyInstance) {
     }
   });
 
+  
+  // Penjualan tunai langsung oleh admin.
+  app.post<{
+    Body: {
+      packageCode: string;
+      customerIdentifier?: string;
+      idempotencyKey: string;
+    };
+  }>("/api/admin/cash-sales", async (request, reply) => {
+    if (request.session.get("isAdmin") !== true) {
+      return reply.code(401).send({
+        error: "Akses admin diperlukan.",
+      });
+    }
 
-    // Statistik ringkas untuk dashboard owner.
+    const packageCode = request.body?.packageCode?.trim();
+    const customerIdentifier =
+      request.body?.customerIdentifier?.trim() || "";
+    const idempotencyKey = request.body?.idempotencyKey?.trim();
+
+    if (!packageCode) {
+      return reply.code(400).send({
+        error: "Paket wajib dipilih.",
+      });
+    }
+
+    if (
+      !idempotencyKey ||
+      idempotencyKey.length < 8 ||
+      idempotencyKey.length > 80
+    ) {
+      return reply.code(400).send({
+        error: "IDEMPOTENCY_KEY_INVALID",
+      });
+    }
+
+    if (customerIdentifier.length > 120) {
+      return reply.code(400).send({
+        error: "Identitas pembeli maksimal 120 karakter.",
+      });
+    }
+
+    const existingOrder = await prisma.order.findUnique({
+      where: { idempotencyKey },
+      include: { package: true, voucher: true },
+    });
+
+    if (existingOrder) {
+      if (
+        existingOrder.package.code !== packageCode ||
+        (existingOrder.customerIdentifier ?? "") !== customerIdentifier
+      ) {
+        return reply.code(409).send({
+          error: "Kunci penjualan sudah digunakan untuk data berbeda.",
+        });
+      }
+
+      if (existingOrder.status !== "PAID" &&
+          existingOrder.status !== "FULFILLING" &&
+          existingOrder.status !== "FULFILLED") {
+        return reply.code(409).send({
+          error: `Status order tidak dapat diproses: ${existingOrder.status}`,
+        });
+      }
+
+      try {
+        const result = await fulfillOrder(existingOrder.id);
+
+        return reply.send({
+          ok: true,
+          message: result.alreadyFulfilled
+            ? "Penjualan ini sudah berhasil diproses."
+            : "Penjualan tunai berhasil diproses.",
+          orderId: existingOrder.id,
+          orderNumber: existingOrder.orderNumber,
+          voucherCode: result.order.voucher?.code ?? result.voucher?.code,
+          amount: existingOrder.amount,
+          package: existingOrder.package.code,
+        });
+      } catch (error) {
+        request.log.error(error);
+
+        return reply.code(202).send({
+          ok: false,
+          fulfillmentPending: true,
+          message: "Pembayaran tercatat, tetapi provisioning MikroTik belum berhasil. Silakan coba ulang.",
+          orderId: existingOrder.id,
+          orderNumber: existingOrder.orderNumber,
+        });
+      }
+    }
+
+    const pkg = await prisma.package.findUnique({
+      where: { code: packageCode },
+    });
+
+    if (!pkg || !pkg.isActive) {
+      return reply.code(404).send({
+        error: "Paket tidak tersedia.",
+      });
+    }
+
+    const now = new Date();
+
+    let order;
+
+    try {
+      order = await prisma.$transaction(async (tx) => {
+        let reservedOrder = null;
+
+        for (let attempt = 0; attempt < 10; attempt++) {
+          const voucher = await tx.voucher.findFirst({
+            where: {
+              packageId: pkg.id,
+              status: "STOCK",
+              order: { is: null },
+            },
+            orderBy: { createdAt: "asc" },
+          });
+
+          if (!voucher) {
+            throw new Error("STOK_VOUCHER_HABIS");
+          }
+
+          const claim = await tx.voucher.updateMany({
+            where: {
+              id: voucher.id,
+              packageId: pkg.id,
+              status: "STOCK",
+              order: { is: null },
+            },
+            data: {
+              status: "RESERVED",
+              reservedUntil: null,
+            },
+          });
+
+          if (claim.count !== 1) {
+            continue;
+          }
+
+          const createdOrder = await tx.order.create({
+            data: {
+              orderNumber: makeOrderNumber(),
+              idempotencyKey,
+              packageId: pkg.id,
+              voucherId: voucher.id,
+              customerIdentifier: customerIdentifier || null,
+              amount: pkg.price,
+              status: "PAID",
+              paidAt: now,
+              expiresAt: null,
+            },
+            include: {
+              package: true,
+              voucher: true,
+            },
+          });
+
+          await tx.payment.create({
+            data: {
+              orderId: createdOrder.id,
+              provider: "CASH",
+              method: "MANUAL",
+              amount: pkg.price,
+              status: "PAID",
+              paidAt: now,
+              providerTransactionId: `CASH-${createdOrder.orderNumber}`,
+            },
+          });
+
+          reservedOrder = createdOrder;
+          break;
+        }
+
+        if (!reservedOrder) {
+          throw new Error("RESERVASI_VOUCHER_GAGAL");
+        }
+
+        return reservedOrder;
+      });
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+
+      if (code === "P2002") {
+        return reply.code(409).send({
+          error: "Penjualan dengan kunci tersebut sudah diproses. Muat ulang data order.",
+        });
+      }
+
+      if (
+        error instanceof Error &&
+        error.message === "STOK_VOUCHER_HABIS"
+      ) {
+        return reply.code(409).send({
+          error: "STOK_VOUCHER_HABIS",
+          message: "Stok voucher paket ini sedang habis.",
+        });
+      }
+
+      request.log.error(error);
+
+      return reply.code(500).send({
+        error: "Gagal membuat penjualan tunai.",
+      });
+    }
+
+    try {
+      const result = await fulfillOrder(order.id);
+
+      return reply.code(201).send({
+        ok: true,
+        message: "Penjualan tunai berhasil diproses.",
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        voucherCode: result.voucher?.code,
+        amount: order.amount,
+        package: order.package.code,
+      });
+    } catch (error) {
+      request.log.error(error);
+
+      return reply.code(202).send({
+        ok: false,
+        fulfillmentPending: true,
+        message: "Pembayaran tercatat, tetapi provisioning MikroTik belum berhasil. Silakan coba ulang.",
+        orderId: order.id,
+        orderNumber: order.orderNumber,
+        amount: order.amount,
+        package: order.package.code,
+      });
+    }
+  });
+
+  // Retry provisioning voucher ke MikroTik.
+app.post<{
+  Params: {
+    orderId: string;
+  };
+}>("/api/admin/orders/:orderId/retry-fulfillment", async (request, reply) => {
+  if (request.session.get("isAdmin") !== true) {
+    return reply.code(401).send({
+      error: "Akses admin diperlukan.",
+    });
+  }
+
+  const { orderId } = request.params;
+
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: {
+      package: true,
+      voucher: true,
+      payments: true,
+    },
+  });
+
+  if (!order) {
+    return reply.code(404).send({
+      error: "Order tidak ditemukan.",
+    });
+  }
+
+  if (order.status === "FULFILLED") {
+    return reply.send({
+      ok: true,
+      alreadyFulfilled: true,
+      message: "Order ini sudah berhasil diproses.",
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      voucherCode: order.voucher?.code,
+    });
+  }
+
+  if (order.status !== "PAID" && order.status !== "FULFILLING") {
+    return reply.code(409).send({
+      error: `Order tidak dapat diproses ulang. Status: ${order.status}`,
+    });
+  }
+
+  const paidPayment = order.payments.some(
+    (payment) => payment.status === "PAID",
+  );
+
+  if (!paidPayment) {
+    return reply.code(409).send({
+      error: "Pembayaran order belum berstatus PAID.",
+    });
+  }
+
+  if (!order.voucher || order.voucher.status !== "RESERVED") {
+    return reply.code(409).send({
+      error: "Voucher tidak ditemukan atau status reservasinya sudah berubah.",
+    });
+  }
+
+  try {
+    const result = await fulfillOrder(order.id);
+
+    return reply.send({
+      ok: true,
+      message: "Provisioning voucher berhasil.",
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      voucherCode: result.order.voucher?.code ?? result.voucher?.code,
+      package: order.package.code,
+    });
+  } catch (error) {
+    request.log.error(error);
+
+    return reply.code(202).send({
+      ok: false,
+      fulfillmentPending: true,
+      message: "Provisioning belum berhasil. Silakan coba ulang.",
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+    });
+  }
+});
+
+  // Statistik ringkas untuk dashboard owner.
   app.get("/api/admin/dashboard/stats", async (request, reply) => {
     if (request.session.get("isAdmin") !== true) {
       return reply.code(401).send({
@@ -214,7 +532,7 @@ export async function orderRoutes(app: FastifyInstance) {
       });
     }
 
-        const [
+    const [
       voucherStock,
       voucherReserved,
       voucherActivated,
@@ -247,7 +565,7 @@ export async function orderRoutes(app: FastifyInstance) {
       }),
     ]);
 
-      return reply.send({
+    return reply.send({
       voucherStock,
       voucherReserved,
       voucherActivated,
@@ -257,8 +575,6 @@ export async function orderRoutes(app: FastifyInstance) {
       revenuePaid: Number(revenue._sum.amount ?? 0),
     });
   });
-
-  
 
   // Daftar order khusus admin yang sudah login.
   app.get("/api/admin/orders", async (request, reply) => {
@@ -289,16 +605,16 @@ export async function orderRoutes(app: FastifyInstance) {
           },
         },
         payments: {
-  select: {
-    provider: true,
-    providerTransactionId: true,
-    status: true,
-    method: true,
-    amount: true,
-    paidAt: true,
-    rawResponse: true,
-  },
-},
+          select: {
+            provider: true,
+            providerTransactionId: true,
+            status: true,
+            method: true,
+            amount: true,
+            paidAt: true,
+            rawResponse: true,
+          },
+        },
       },
     });
 
@@ -308,21 +624,21 @@ export async function orderRoutes(app: FastifyInstance) {
     });
   });
 
-  // Detail order publik dengan field terbatas.
+  // Detail order publik dengan field terbatas (Disertai Auto-Check Midtrans Fallback).
   app.get<{ Params: { id: string } }>(
     "/api/orders/:id",
     async (request, reply) => {
-     const identifier = request.params.id;
+      const identifier = request.params.id;
 
-const isUuid =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-    identifier
-  );
+      const isUuid =
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+          identifier
+        );
 
-const order = await prisma.order.findFirst({
-  where: isUuid
-    ? { id: identifier }
-    : { orderNumber: identifier },
+      const foundOrder = await prisma.order.findFirst({
+        where: isUuid
+          ? { id: identifier }
+          : { orderNumber: identifier },
         select: {
           id: true,
           orderNumber: true,
@@ -332,7 +648,7 @@ const order = await prisma.order.findFirst({
           paidAt: true,
           fulfilledAt: true,
           createdAt: true,
-                    package: {
+          package: {
             select: {
               code: true,
               name: true,
@@ -351,6 +667,7 @@ const order = await prisma.order.findFirst({
           },
           payments: {
             select: {
+              id: true,
               status: true,
               method: true,
               amount: true,
@@ -360,10 +677,114 @@ const order = await prisma.order.findFirst({
         },
       });
 
-      if (!order) {
-        return reply.code(404).send({
-          error: "Order tidak ditemukan",
-        });
+      if (!foundOrder) {
+  return reply.code(404).send({
+    error: "Order tidak ditemukan",
+  });
+}
+
+const targetOrderId = foundOrder.id;
+let order = foundOrder;
+
+      // FALLBACK AUTO-CHECK: Jika status masih PENDING, tanyakan ke Midtrans API
+      if (order.status === "PENDING" && env.MIDTRANS_SERVER_KEY) {
+        try {
+          const authHeader = `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ":").toString("base64")}`;
+          const midtransStatusUrl = env.MIDTRANS_IS_PRODUCTION
+            ? `https://api.midtrans.com/v2/${order.orderNumber}/status`
+            : `https://api.sandbox.midtrans.com/v2/${order.orderNumber}/status`;
+
+          const res = await fetch(midtransStatusUrl, {
+            method: "GET",
+            headers: {
+              Accept: "application/json",
+              Authorization: authHeader,
+            },
+          });
+
+          if (res.ok) {
+            const midtransData = (await res.json()) as any;
+            const status = midtransData.transaction_status;
+            const fraud = midtransData.fraud_status;
+
+            const isPaid =
+              status === "settlement" || (status === "capture" && fraud === "accept");
+
+            if (isPaid) {
+              const now = new Date();
+              const pendingPayment = order.payments.find((p) => p.status === "PENDING");
+
+              await prisma.$transaction(async (tx) => {
+  await tx.order.update({
+    where: { id: targetOrderId },
+    data: { status: "PAID", paidAt: now },
+  });
+
+  if (pendingPayment) {
+    await tx.payment.update({
+      where: { id: pendingPayment.id },
+      data: {
+        status: "PAID",
+        paidAt: now,
+        providerTransactionId:
+          midtransData.transaction_id || `AUTO-${Date.now()}`,
+        rawResponse: midtransData,
+      },
+    });
+  }
+});
+
+await fulfillOrder(targetOrderId);
+
+              // Ambil ulang data order yang sudah FULFILLED beserta voucher
+              const updatedOrder = await prisma.order.findUnique({
+  where: { id: targetOrderId },
+                select: {
+                  id: true,
+                  orderNumber: true,
+                  amount: true,
+                  status: true,
+                  expiresAt: true,
+                  paidAt: true,
+                  fulfilledAt: true,
+                  createdAt: true,
+                  package: {
+                    select: {
+                      code: true,
+                      name: true,
+                      durationMinutes: true,
+                      speedMbps: true,
+                    },
+                  },
+                  voucher: {
+                    select: {
+                      code: true,
+                      username: true,
+                      status: true,
+                      activatedAt: true,
+                      expiresAt: true,
+                    },
+                  },
+                  payments: {
+                    select: {
+                      id: true,
+                      status: true,
+                      method: true,
+                      amount: true,
+                      paidAt: true,
+                    },
+                  },
+                },
+              });
+
+              if (updatedOrder) {
+                order = updatedOrder;
+              }
+            }
+          }
+        } catch (err) {
+          request.log.error(err, "Gagal auto-check status Midtrans");
+        }
       }
 
       const { voucher, ...safeOrder } = order;

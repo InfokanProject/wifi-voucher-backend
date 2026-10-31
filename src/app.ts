@@ -62,9 +62,7 @@ export function buildApp() {
       .send(html);
   });
 
-
-
-  app.get("/health", async () => ({
+    app.get("/health", async () => ({
     ok: true,
     service: "wifi-voucher-backend"
   }));

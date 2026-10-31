@@ -463,8 +463,42 @@
           </div>
           <button id="refreshOrdersButton" class="secondary" type="button">↻</button>
         </div>
-        <div id="ordersMessage" aria-live="polite"></div>
-        <div class="table-wrap">
+        
+<div id="ordersMessage" aria-live="polite"></div>
+
+<div class="panel section">
+  <h3>Penjualan Tunai</h3>
+  <p class="muted small">
+    Pilih paket untuk menjual voucher langsung dari stok PostgreSQL.
+  </p>
+
+  <form id="cashSaleForm" class="form-grid">
+    <div>
+      <label for="cashPackageSelect">Paket</label>
+      <select id="cashPackageSelect" required></select>
+    </div>
+
+    <div>
+      <label for="cashCustomerIdentifier">Identitas pembeli (opsional)</label>
+      <input
+        id="cashCustomerIdentifier"
+        type="text"
+        maxlength="120"
+        placeholder="Nama atau nomor WhatsApp"
+      >
+    </div>
+
+    <button id="cashSaleButton" type="submit">
+      Proses Penjualan Tunai
+    </button>
+  </form>
+
+  <div id="cashSaleMessage" aria-live="polite"></div>
+  <div id="cashSaleResult" aria-live="polite"></div>
+</div>
+
+<div class="table-wrap">
+
           <table>
             <thead>
               
@@ -519,6 +553,7 @@
     let currentView = "overview";
     let packageData = [];
     let loadedViews = new Set();
+    let pendingCashSaleKey = null;
 
     function escapeHtml(value) {
       return String(value ?? "").replace(/[&<>"']/g, (char) => ({
@@ -576,7 +611,7 @@
         if (response.status === 401 && url !== "/api/admin/login") {
           setLoggedIn(false);
         }
-        throw new Error(data.error || `Permintaan gagal (${response.status})`);
+        throw new Error(data.message || data.error || `Permintaan gagal (${response.status})`);
       }
       return data;
     }
@@ -633,6 +668,9 @@
       $("packageSelect").innerHTML = packageData.map((pkg) => `
         <option value="${escapeHtml(pkg.code)}">${escapeHtml(pkg.name)} — ${escapeHtml(rupiah(pkg.price))}</option>
       `).join("");
+      $("cashPackageSelect").innerHTML = packageData.map((pkg) => `
+  <option value="${escapeHtml(pkg.code)}">${escapeHtml(pkg.name)} — ${escapeHtml(rupiah(pkg.price))}</option>
+`).join("");
     }
 
     
@@ -781,6 +819,12 @@ function renderOrderRow(order, compact = false) {
   const canConfirm =
     order.status === "PENDING" &&
     paymentStatuses.includes("PENDING");
+  const canRetry =
+  ["PAID", "FULFILLING"].includes(order.status) &&
+  (order.payments || []).some(
+    (payment) => payment.status === "PAID"
+  );
+
 
   if (compact) {
     return `<tr>
@@ -792,10 +836,16 @@ function renderOrderRow(order, compact = false) {
   }
 
   const action = canConfirm
+  ? `<button class="secondary" type="button"
+       data-confirm-payment="${escapeHtml(order.id)}"
+       data-order-number="${escapeHtml(order.orderNumber)}">
+       Konfirmasi Pembayaran
+     </button>`
+  : canRetry
     ? `<button class="secondary" type="button"
-         data-confirm-payment="${escapeHtml(order.id)}"
+         data-retry-fulfillment="${escapeHtml(order.id)}"
          data-order-number="${escapeHtml(order.orderNumber)}">
-         Konfirmasi Pembayaran
+         Retry Provisioning
        </button>`
     : "—";
 
@@ -839,8 +889,11 @@ function renderOrderRow(order, compact = false) {
 } else if (view === "vouchers") {
           await loadVouchers();
         } else if (view === "orders") {
-          await loadOrders(false);
-        } else if (view === "packages") {
+  await Promise.all([
+    loadOrders(false),
+    loadPackages()
+  ]);
+}else if (view === "packages") {
           await loadPackages();
         }
 
@@ -935,6 +988,73 @@ function renderOrderRow(order, compact = false) {
       }
     });
 
+    
+$("cashSaleForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+
+  const button = $("cashSaleButton");
+  button.disabled = true;
+
+  $("cashSaleResult").textContent = "";
+  showMessage("cashSaleMessage", "Memproses penjualan tunai...", "");
+
+  if (!pendingCashSaleKey) {
+    pendingCashSaleKey =
+      `CASH-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+  }
+
+  try {
+    const result = await api("/api/admin/cash-sales", {
+      method: "POST",
+      body: JSON.stringify({
+        packageCode: $("cashPackageSelect").value,
+        customerIdentifier: $("cashCustomerIdentifier").value.trim(),
+        idempotencyKey: pendingCashSaleKey
+      })
+    });
+
+    pendingCashSaleKey = null;
+
+    if (result.fulfillmentPending) {
+      showMessage(
+        "cashSaleMessage",
+        result.message,
+        "error"
+      );
+
+      $("cashSaleResult").textContent =
+        `Nomor order: ${result.orderNumber}. Coba Retry Provisioning pada daftar order.`;
+    } else {
+      showMessage(
+        "cashSaleMessage",
+        result.message || "Penjualan tunai berhasil.",
+        "success"
+      );
+
+      $("cashSaleResult").textContent =
+        `Kode voucher: ${result.voucherCode || "Tidak tersedia"} | ` +
+        `Paket: ${result.package} | ` +
+        `Nominal: ${rupiah(result.amount)} | ` +
+        `Order: ${result.orderNumber}`;
+
+      $("cashCustomerIdentifier").value = "";
+    }
+
+    loadedViews.delete("overview");
+    loadedViews.delete("vouchers");
+
+    await Promise.all([
+      loadOrders(false),
+      loadStats()
+    ]);
+  } catch (error) {
+    showMessage("cashSaleMessage", error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
+});
+
+
     $("refreshStatsButton").addEventListener("click", () => {
       loadedViews.delete("overview");
       showView("overview", true);
@@ -950,7 +1070,58 @@ function renderOrderRow(order, compact = false) {
   loadView("orders", true);
 }); 
     
+
 $("orderRows").addEventListener("click", async (event) => {
+  // RETRY PROVISIONING
+  const retryButton = event.target.closest("[data-retry-fulfillment]");
+
+  if (retryButton) {
+    const orderId = retryButton.dataset.retryFulfillment;
+    const orderNumber = retryButton.dataset.orderNumber;
+
+    const confirmed = window.confirm(
+      `Ulangi provisioning untuk order ${orderNumber}?\n\n` +
+      "Sistem akan mencoba membuat user voucher di MikroTik kembali."
+    );
+
+    if (!confirmed) return;
+
+    retryButton.disabled = true;
+    $("ordersMessage").textContent = "Mengulangi provisioning voucher...";
+
+    try {
+            const result = await api(
+        `/api/admin/orders/${encodeURIComponent(orderId)}/retry-fulfillment`,
+        {
+          method: "POST",
+          body: JSON.stringify({})
+        }
+      );
+
+      if (result.fulfillmentPending) {
+        $("ordersMessage").textContent =
+          `${result.message} Order: ${orderNumber}.`;
+      } else {
+        $("ordersMessage").textContent =
+          `${result.message} Kode voucher: ${result.voucherCode || "Tidak tersedia"}.`;
+      }
+
+      loadedViews.delete("overview");
+      loadedViews.delete("vouchers");
+
+      await Promise.all([
+        loadOrders(false),
+        loadStats()
+      ]);
+    } catch (error) {
+      $("ordersMessage").textContent = error.message;
+      retryButton.disabled = false;
+    }
+
+    return;
+  }
+
+  // KONFIRMASI PEMBAYARAN
   const button = event.target.closest("[data-confirm-payment]");
   if (!button) return;
 
@@ -988,6 +1159,7 @@ $("orderRows").addEventListener("click", async (event) => {
       `${result.message} Nomor order: ${result.orderNumber}.`;
 
     loadedViews.delete("overview");
+    loadedViews.delete("vouchers");
 
     await Promise.all([
       loadOrders(false),
@@ -998,7 +1170,6 @@ $("orderRows").addEventListener("click", async (event) => {
     button.disabled = false;
   }
 });
-
 
     $("refreshPackagesButton").addEventListener("click", () => {
       loadedViews.delete("packages");
