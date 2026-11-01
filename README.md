@@ -73,10 +73,10 @@ npm run db:seed
 Paket yang dibuat:
 
 - 12J — 12 jam — 25 Mbps — Rp3.000
-- 1H — 1 hari — 10 Mbps — Rp5.000
-- 3H — 3 hari — 10 Mbps — Rp10.000
-- 7H — 7 hari — 15 Mbps — Rp15.000
-- 14H — 14 hari — 15 Mbps — Rp25.000
+- 1H — 1 hari — 25 Mbps — Rp5.000
+- 3H — 3 hari — 25 Mbps — Rp10.000
+- 7H — 7 hari — 25 Mbps — Rp15.000
+- 14H — 14 hari — 25 Mbps — Rp25.000
 - 30H — 30 hari — 25 Mbps — Rp50.000
 
 ## 8. Jalankan backend
