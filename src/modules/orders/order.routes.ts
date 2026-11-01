@@ -668,6 +668,7 @@ app.post<{
           payments: {
             select: {
               id: true,
+              provider: true,
               status: true,
               method: true,
               amount: true,
@@ -686,13 +687,19 @@ app.post<{
 const targetOrderId = foundOrder.id;
 let order = foundOrder;
 
-      // FALLBACK AUTO-CHECK: Jika status masih PENDING, tanyakan ke Midtrans API
+      // FALLBACK AUTO-CHECK: Verifikasi status melalui Midtrans Status API.
       if (order.status === "PENDING" && env.MIDTRANS_SERVER_KEY) {
         try {
-          const authHeader = `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ":").toString("base64")}`;
-          const midtransStatusUrl = env.MIDTRANS_IS_PRODUCTION
-            ? `https://api.midtrans.com/v2/${order.orderNumber}/status`
-            : `https://api.sandbox.midtrans.com/v2/${order.orderNumber}/status`;
+          const authHeader = `Basic ${Buffer.from(
+            env.MIDTRANS_SERVER_KEY + ":",
+          ).toString("base64")}`;
+
+          const statusBaseUrl = env.MIDTRANS_IS_PRODUCTION
+            ? "https://api.midtrans.com"
+            : "https://api.sandbox.midtrans.com";
+
+          const midtransStatusUrl =
+            `${statusBaseUrl}/v2/${encodeURIComponent(order.orderNumber)}/status`;
 
           const res = await fetch(midtransStatusUrl, {
             method: "GET",
@@ -703,82 +710,171 @@ let order = foundOrder;
           });
 
           if (res.ok) {
-            const midtransData = (await res.json()) as any;
-            const status = midtransData.transaction_status;
-            const fraud = midtransData.fraud_status;
+            const midtransData = (await res.json()) as Record<string, any>;
 
-            const isPaid =
-              status === "settlement" || (status === "capture" && fraud === "accept");
+            const verifiedOrderId = String(midtransData.order_id ?? "");
+            const statusCode = String(midtransData.status_code ?? "");
+            const grossAmount = String(midtransData.gross_amount ?? "");
+            const transactionStatus = String(
+              midtransData.transaction_status ?? "",
+            );
+            const fraudStatus = String(midtransData.fraud_status ?? "");
+            const transactionId = String(
+              midtransData.transaction_id ?? "",
+            );
 
-            if (isPaid) {
-              const now = new Date();
-              const pendingPayment = order.payments.find((p) => p.status === "PENDING");
+            const parsedAmount = Number(grossAmount);
 
-              await prisma.$transaction(async (tx) => {
-  await tx.order.update({
-    where: { id: targetOrderId },
-    data: { status: "PAID", paidAt: now },
-  });
+            const validTransaction =
+              verifiedOrderId === order.orderNumber &&
+              statusCode === "200" &&
+              /^\d+(\.\d{1,2})?$/.test(grossAmount) &&
+              Number.isFinite(parsedAmount) &&
+              parsedAmount === Number(order.amount) &&
+              transactionId.length > 0;
 
-  if (pendingPayment) {
-    await tx.payment.update({
-      where: { id: pendingPayment.id },
-      data: {
-        status: "PAID",
-        paidAt: now,
-        providerTransactionId:
-          midtransData.transaction_id || `AUTO-${Date.now()}`,
-        rawResponse: midtransData,
-      },
-    });
-  }
-});
-
-await fulfillOrder(targetOrderId);
-
-              // Ambil ulang data order yang sudah FULFILLED beserta voucher
-              const updatedOrder = await prisma.order.findUnique({
-  where: { id: targetOrderId },
-                select: {
-                  id: true,
-                  orderNumber: true,
-                  amount: true,
-                  status: true,
-                  expiresAt: true,
-                  paidAt: true,
-                  fulfilledAt: true,
-                  createdAt: true,
-                  package: {
-                    select: {
-                      code: true,
-                      name: true,
-                      durationMinutes: true,
-                      speedMbps: true,
-                    },
-                  },
-                  voucher: {
-                    select: {
-                      code: true,
-                      username: true,
-                      status: true,
-                      activatedAt: true,
-                      expiresAt: true,
-                    },
-                  },
-                  payments: {
-                    select: {
-                      id: true,
-                      status: true,
-                      method: true,
-                      amount: true,
-                      paidAt: true,
-                    },
-                  },
+            if (!validTransaction) {
+              request.log.warn(
+                {
+                  orderId: order.orderNumber,
+                  verifiedOrderId,
+                  statusCode,
+                  grossAmount,
+                  orderAmount: Number(order.amount),
                 },
-              });
+                "Data Status API Midtrans tidak cocok dengan order.",
+              );
+            } else {
+              const midtransPayments = order.payments.filter(
+                (p) => p.provider === "MIDTRANS",
+              );
 
-              if (updatedOrder) {
-                order = updatedOrder;
+              if (midtransPayments.length !== 1) {
+                request.log.warn(
+                  {
+                    orderId: order.orderNumber,
+                    midtransPaymentCount: midtransPayments.length,
+                  },
+                  "Payment Midtrans tidak ditemukan atau tidak unik.",
+                );
+              } else {
+                const pendingPayment = midtransPayments[0];
+
+                if (
+                  pendingPayment.status !== "PENDING" ||
+                  pendingPayment.amount !== order.amount
+                ) {
+                  request.log.warn(
+                    {
+                      orderId: order.orderNumber,
+                      paymentStatus: pendingPayment.status,
+                      paymentAmount: pendingPayment.amount,
+                      orderAmount: order.amount,
+                    },
+                    "Payment tidak memenuhi syarat auto-check.",
+                  );
+                } else {
+                  const isPaid =
+                    transactionStatus === "settlement" ||
+                    (transactionStatus === "capture" &&
+                      fraudStatus === "accept");
+
+                  if (isPaid) {
+                    const now = new Date();
+
+                    const claimed = await prisma.$transaction(
+                      async (tx) => {
+                        const paymentUpdate = await tx.payment.updateMany({
+                          where: {
+                            id: pendingPayment.id,
+                            provider: "MIDTRANS",
+                            status: "PENDING",
+                            amount: order.amount,
+                          },
+                          data: {
+                            status: "PAID",
+                            paidAt: now,
+                            providerTransactionId: transactionId,
+                            rawResponse: midtransData,
+                          },
+                        });
+
+                        if (paymentUpdate.count !== 1) {
+                          return false;
+                        }
+
+                        const orderUpdate = await tx.order.updateMany({
+                          where: {
+                            id: targetOrderId,
+                            status: "PENDING",
+                          },
+                          data: {
+                            status: "PAID",
+                            paidAt: now,
+                          },
+                        });
+
+                        if (orderUpdate.count !== 1) {
+                          throw new Error(
+                            "Order tidak lagi berstatus PENDING. Transaksi dibatalkan.",
+                          );
+                        }
+
+                        return true;
+                      },
+                    );
+
+                    if (claimed) {
+                      await fulfillOrder(targetOrderId);
+
+                      // Ambil ulang order beserta voucher dan payment.
+                      const updatedOrder = await prisma.order.findUnique({
+                        where: { id: targetOrderId },
+                        select: {
+                          id: true,
+                          orderNumber: true,
+                          amount: true,
+                          status: true,
+                          expiresAt: true,
+                          paidAt: true,
+                          fulfilledAt: true,
+                          createdAt: true,
+                          package: {
+                            select: {
+                              code: true,
+                              name: true,
+                              durationMinutes: true,
+                              speedMbps: true,
+                            },
+                          },
+                          voucher: {
+                            select: {
+                              code: true,
+                              username: true,
+                              status: true,
+                              activatedAt: true,
+                              expiresAt: true,
+                            },
+                          },
+                          payments: {
+                            select: {
+                              id: true,
+                              provider: true,
+                              status: true,
+                              method: true,
+                              amount: true,
+                              paidAt: true,
+                            },
+                          },
+                        },
+                      });
+
+                      if (updatedOrder) {
+                        order = updatedOrder;
+                      }
+                    }
+                  }
+                }
               }
             }
           }

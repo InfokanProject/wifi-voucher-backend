@@ -1,0 +1,383 @@
+[1mdiff --git a/src/modules/payments/payment.routes.ts b/src/modules/payments/payment.routes.ts[m
+[1mindex f0f4702..1c5d084 100644[m
+[1m--- a/src/modules/payments/payment.routes.ts[m
+[1m+++ b/src/modules/payments/payment.routes.ts[m
+[36m@@ -1,4 +1,3 @@[m
+[31m-import { createHash } from "node:crypto";[m
+ import { FastifyInstance } from "fastify";[m
+ import { env } from "../../config/env";[m
+ import { prisma } from "../../lib/prisma";[m
+[36m@@ -16,26 +15,6 @@[m [mfunction getSnapUrl(): string {[m
+     : "https://app.sandbox.midtrans.com/snap/v1/transactions";[m
+ }[m
+ [m
+[31m-function verifyMidtransSignature([m
+[31m-  orderId: string,[m
+[31m-  statusCode: string,[m
+[31m-  grossAmount: string,[m
+[31m-  signatureKey: string,[m
+[31m-): boolean {[m
+[31m-  if (!env.MIDTRANS_SERVER_KEY) return false;[m
+[31m-[m
+[31m-  // Format angka bulat ("3000")[m
+[31m-  const raw1 = `${orderId}${statusCode}${grossAmount}${env.MIDTRANS_SERVER_KEY}`;[m
+[31m-  const expected1 = createHash("sha512").update(raw1).digest("hex");[m
+[31m-  if (expected1.toLowerCase() === signatureKey.toLowerCase()) return true;[m
+[31m-[m
+[31m-  // Format desimal Midtrans Sandbox ("3000.00")[m
+[31m-  const formattedAmount = Number(parseFloat(grossAmount)).toFixed(2);[m
+[31m-  const raw2 = `${orderId}${statusCode}${formattedAmount}${env.MIDTRANS_SERVER_KEY}`;[m
+[31m-  const expected2 = createHash("sha512").update(raw2).digest("hex");[m
+[31m-  return expected2.toLowerCase() === signatureKey.toLowerCase();[m
+[31m-}[m
+[31m-[m
+ export async function paymentRoutes(app: FastifyInstance) {[m
+   // 1. Membuat transaksi Midtrans Snap[m
+   app.post<{[m
+[36m@@ -88,13 +67,29 @@[m [mexport async function paymentRoutes(app: FastifyInstance) {[m
+       });[m
+     }[m
+ [m
+[31m-    const payment = order.payments.find([m
+[32m+[m[32m        const pendingPayments = order.payments.filter([m
+       (item) => item.status === "PENDING",[m
+     );[m
+ [m
+[31m-    if (!payment || payment.amount !== order.amount) {[m
+[32m+[m[32m    if (pendingPayments.length !== 1) {[m
+[32m+[m[32m      request.log.warn([m
+[32m+[m[32m        {[m
+[32m+[m[32m          orderNumber: order.orderNumber,[m
+[32m+[m[32m          pendingPaymentCount: pendingPayments.length,[m
+[32m+[m[32m        },[m
+[32m+[m[32m        "Jumlah payment pending tidak sesuai.",[m
+[32m+[m[32m      );[m
+[32m+[m
+       return reply.code(409).send({[m
+[31m-        error: "Payment pending tidak ditemukan atau nominal tidak cocok.",[m
+[32m+[m[32m        error: "Payment pending tidak ditemukan atau tidak unik.",[m
+[32m+[m[32m      });[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    const payment = pendingPayments[0];[m
+[32m+[m
+[32m+[m[32m    if (payment.amount !== order.amount) {[m
+[32m+[m[32m      return reply.code(409).send({[m
+[32m+[m[32m        error: "Nominal payment tidak cocok dengan order.",[m
+       });[m
+     }[m
+ [m
+[36m@@ -139,16 +134,14 @@[m [mexport async function paymentRoutes(app: FastifyInstance) {[m
+           "Content-Type": "application/json",[m
+           Accept: "application/json",[m
+           Authorization: authHeader,[m
+[32m+[m[32m          "X-Override-Notification": `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,[m
+         },[m
+         body: JSON.stringify({[m
+           transaction_details: {[m
+             order_id: order.orderNumber,[m
+             gross_amount: order.amount,[m
+           },[m
+[31m-                    override_notification_urls: [[m
+[31m-            `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,[m
+[31m-          ],[m
+[31m-          callbacks: {[m
+[32m+[m[32m            callbacks: {[m
+             finish: `${env.PUBLIC_APP_URL}/beli`,[m
+           },[m
+           item_details: [[m
+[36m@@ -262,64 +255,166 @@[m [mexport async function paymentRoutes(app: FastifyInstance) {[m
+     }[m
+ [m
+     const orderId = String(body.order_id ?? "");[m
+[31m-    const statusCode = String(body.status_code ?? "");[m
+[31m-    const grossAmount = String(body.gross_amount ?? "");[m
+[31m-    const signatureKey = String(body.signature_key ?? "");[m
+[31m-    const transactionStatus = String(body.transaction_status ?? "");[m
+[31m-    const fraudStatus = String(body.fraud_status ?? "");[m
+[31m-    const transactionId = String(body.transaction_id ?? "");[m
+ [m
+[31m-    if (!orderId || !statusCode || !grossAmount || !signatureKey) {[m
+[31m-      return reply.code(200).send({ status: "OK", message: "Ping/Parameter tidak lengkap." });[m
+[31m-    }[m
+[32m+[m[32mif (!orderId) {[m
+[32m+[m[32m  return reply.code(200).send({[m
+[32m+[m[32m    status: "OK",[m
+[32m+[m[32m    message: "Order ID tidak ditemukan.",[m
+[32m+[m[32m  });[m
+[32m+[m[32m}[m
+ [m
+[31m-    if (!verifyMidtransSignature(orderId, statusCode, grossAmount, signatureKey)) {[m
+[31m-      request.log.warn({ orderId }, "Signature Midtrans notification tidak valid.");[m
+[31m-      return reply.send({ status: "OK", message: "Signature tidak cocok tapi diterima." });[m
+[31m-    }[m
+[32m+[m[32m// Cari order lokal terlebih dahulu.[m
+[32m+[m[32mconst order = await prisma.order.findUnique({[m
+[32m+[m[32m  where: { orderNumber: orderId },[m
+[32m+[m[32m  include: {[m
+[32m+[m[32m    package: true,[m
+[32m+[m[32m    payments: true,[m
+[32m+[m[32m    voucher: true,[m
+[32m+[m[32m  },[m
+[32m+[m[32m});[m
+[32m+[m
+[32m+[m[32mif (!order) {[m
+[32m+[m[32m  request.log.warn([m
+[32m+[m[32m    { orderId },[m
+[32m+[m[32m    "Order notifikasi Midtrans tidak ditemukan.",[m
+[32m+[m[32m  );[m
+[32m+[m
+[32m+[m[32m  return reply.send({[m
+[32m+[m[32m    status: "OK",[m
+[32m+[m[32m    message: "Order dummy/test diterima.",[m
+[32m+[m[32m  });[m
+[32m+[m[32m}[m
+ [m
+[31m-    const order = await prisma.order.findUnique({[m
+[31m-      where: { orderNumber: orderId },[m
+[31m-      include: {[m
+[31m-        package: true,[m
+[31m-        payments: true,[m
+[31m-        voucher: true,[m
+[32m+[m[32m// Webhook hanya menjadi pemicu.[m
+[32m+[m[32m// Status pembayaran diverifikasi langsung melalui Midtrans API.[m
+[32m+[m[32mconst statusBaseUrl = env.MIDTRANS_IS_PRODUCTION[m
+[32m+[m[32m  ? "https://api.midtrans.com"[m
+[32m+[m[32m  : "https://api.sandbox.midtrans.com";[m
+[32m+[m
+[32m+[m[32mconst statusUrl =[m
+[32m+[m[32m  `${statusBaseUrl}/v2/${encodeURIComponent(order.orderNumber)}/status`;[m
+[32m+[m
+[32m+[m[32mlet midtransData: Record<string, any>;[m
+[32m+[m
+[32m+[m[32mtry {[m
+[32m+[m[32m  const authHeader = `Basic ${Buffer.from([m
+[32m+[m[32m    env.MIDTRANS_SERVER_KEY + ":",[m
+[32m+[m[32m  ).toString("base64")}`;[m
+[32m+[m
+[32m+[m[32m  const statusResponse = await fetch(statusUrl, {[m
+[32m+[m[32m    method: "GET",[m
+[32m+[m[32m    headers: {[m
+[32m+[m[32m      Accept: "application/json",[m
+[32m+[m[32m      Authorization: authHeader,[m
+[32m+[m[32m    },[m
+[32m+[m[32m  });[m
+[32m+[m
+[32m+[m[32m  if (!statusResponse.ok) {[m
+[32m+[m[32m    const responseText = await statusResponse.text();[m
+[32m+[m
+[32m+[m[32m    request.log.error([m
+[32m+[m[32m      {[m
+[32m+[m[32m        orderId,[m
+[32m+[m[32m        httpStatus: statusResponse.status,[m
+[32m+[m[32m        response: responseText,[m
+       },[m
+[32m+[m[32m      "Gagal mengambil status transaksi dari Midtrans.",[m
+[32m+[m[32m    );[m
+[32m+[m
+[32m+[m[32m    return reply.code(503).send({[m
+[32m+[m[32m      status: "ERROR",[m
+[32m+[m[32m      message: "Status pembayaran belum dapat diverifikasi.",[m
+     });[m
+[32m+[m[32m  }[m
+ [m
+[31m-    if (!order) {[m
+[31m-      request.log.warn({ orderId }, "Order notifikasi Midtrans tidak ditemukan.");[m
+[31m-      return reply.send({ status: "OK", message: "Order dummy/test diterima." });[m
+[31m-    }[m
+[32m+[m[32m  midtransData = (await statusResponse.json()) as Record<string, any>;[m
+[32m+[m[32m} catch (err) {[m
+[32m+[m[32m  request.log.error([m
+[32m+[m[32m    { err, orderId },[m
+[32m+[m[32m    "Request GET Status API Midtrans gagal.",[m
+[32m+[m[32m  );[m
+ [m
+[31m-    const parsedAmount = Math.round(parseFloat(grossAmount));[m
+[31m-    if (parsedAmount !== order.amount) {[m
+[31m-      request.log.error([m
+[31m-        { orderId, grossAmount, orderAmount: order.amount },[m
+[31m-        "Nominal pembayaran notifikasi Midtrans tidak cocok.",[m
+[31m-      );[m
+[31m-      return reply.send({ status: "OK", message: "Nominal tidak cocok." });[m
+[31m-    }[m
+[32m+[m[32m  return reply.code(503).send({[m
+[32m+[m[32m    status: "ERROR",[m
+[32m+[m[32m    message: "Tidak dapat menghubungi Midtrans.",[m
+[32m+[m[32m  });[m
+[32m+[m[32m}[m
+ [m
+[31m-    const payment = order.payments.find([m
+[31m-      (p) => p.provider === "MIDTRANS" || p.status === "PENDING",[m
+[31m-    );[m
+[32m+[m[32m// Ambil data pembayaran dari respons API yang sudah diautentikasi.[m
+[32m+[m[32mconst verifiedOrderId = String(midtransData.order_id ?? "");[m
+[32m+[m[32mconst statusCode = String(midtransData.status_code ?? "");[m
+[32m+[m[32mconst grossAmount = String(midtransData.gross_amount ?? "");[m
+[32m+[m[32mconst transactionStatus = String([m
+[32m+[m[32m  midtransData.transaction_status ?? "",[m
+[32m+[m[32m);[m
+[32m+[m[32mconst fraudStatus = String(midtransData.fraud_status ?? "");[m
+[32m+[m[32mconst transactionId = String(midtransData.transaction_id ?? "");[m
+[32m+[m
+[32m+[m[32m// Validasi identitas order dan nominal.[m
+[32m+[m[32mconst parsedAmount = Number(grossAmount);[m
+[32m+[m
+[32m+[m[32mif ([m
+[32m+[m[32m  verifiedOrderId !== order.orderNumber ||[m
+[32m+[m[32m  statusCode !== "200" ||[m
+[32m+[m[32m  !/^\d+(\.\d{1,2})?$/.test(grossAmount) ||[m
+[32m+[m[32m  !Number.isFinite(parsedAmount) ||[m
+[32m+[m[32m  parsedAmount !== Number(order.amount)[m
+[32m+[m[32m) {[m
+[32m+[m[32m  request.log.error([m
+[32m+[m[32m    {[m
+[32m+[m[32m      orderId,[m
+[32m+[m[32m      verifiedOrderId,[m
+[32m+[m[32m      statusCode,[m
+[32m+[m[32m      grossAmount,[m
+[32m+[m[32m      orderAmount: Number(order.amount),[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "Respons GET Status API Midtrans tidak cocok dengan order lokal.",[m
+[32m+[m[32m  );[m
+[32m+[m
+[32m+[m[32m  return reply.code(502).send({[m
+[32m+[m[32m    status: "ERROR",[m
+[32m+[m[32m    message: "Data transaksi Midtrans tidak cocok dengan order.",[m
+[32m+[m[32m  });[m
+[32m+[m[32m}[m
+ [m
+[31m-    if (!payment) {[m
+[31m-      return reply.send({ status: "OK", message: "Payment record tidak ditemukan." });[m
+[31m-    }[m
+[32m+[m[32m// Pastikan hanya ada satu payment Midtrans.[m
+[32m+[m[32mconst midtransPayments = order.payments.filter([m
+[32m+[m[32m  (p) => p.provider === "MIDTRANS",[m
+[32m+[m[32m);[m
+[32m+[m
+[32m+[m[32mif (midtransPayments.length !== 1) {[m
+[32m+[m[32m  request.log.error([m
+[32m+[m[32m    {[m
+[32m+[m[32m      orderId,[m
+[32m+[m[32m      midtransPaymentCount: midtransPayments.length,[m
+[32m+[m[32m    },[m
+[32m+[m[32m    "Jumlah payment Midtrans tidak sesuai.",[m
+[32m+[m[32m  );[m
+[32m+[m
+[32m+[m[32m  return reply.send({[m
+[32m+[m[32m    status: "OK",[m
+[32m+[m[32m    message: "Payment Midtrans tidak ditemukan atau tidak unik.",[m
+[32m+[m[32m  });[m
+[32m+[m[32m}[m
+ [m
+[31m-    const isSuccess =[m
+[31m-      transactionStatus === "settlement" ||[m
+[31m-      (transactionStatus === "capture" && fraudStatus === "accept");[m
+[32m+[m[32mconst payment = midtransPayments[0];[m
+ [m
+[31m-    const isFailedOrExpired =[m
+[31m-      transactionStatus === "deny" ||[m
+[31m-      transactionStatus === "cancel" ||[m
+[31m-      transactionStatus === "expire";[m
+[32m+[m[32mconst verifiedRawResponse = {[m
+[32m+[m[32m  webhook: body,[m
+[32m+[m[32m  status: midtransData,[m
+[32m+[m[32m};[m
+ [m
+[31m-    const now = new Date();[m
+[32m+[m[32mconst isSuccess =[m
+[32m+[m[32m  (transactionStatus === "settlement" ||[m
+[32m+[m[32m    transactionStatus === "capture") &&[m
+[32m+[m[32m  (!fraudStatus || fraudStatus === "accept");[m
+[32m+[m
+[32m+[m[32mconst isFailedOrExpired =[m
+[32m+[m[32m  transactionStatus === "deny" ||[m
+[32m+[m[32m  transactionStatus === "cancel" ||[m
+[32m+[m[32m  transactionStatus === "expire";[m
+ [m
+[32m+[m[32mconst now = new Date();[m
+     [m
+ if (isSuccess) {[m
+   // Order sudah selesai: jangan pernah menerbitkan voucher ulang.[m
+[36m@@ -329,8 +424,8 @@[m [mif (isSuccess) {[m
+         where: { id: payment.id },[m
+         data: {[m
+           providerTransactionId: transactionId,[m
+[31m-          rawResponse: body as any,[m
+[31m-        },[m
+[32m+[m[32mrawResponse: verifiedRawResponse as any,[m[41m        [m
+[32m+[m[32m      },[m
+       });[m
+     }[m
+ [m
+[36m@@ -353,8 +448,7 @@[m [mif (isSuccess) {[m
+           paidAt: payment.paidAt ?? now,[m
+           providerTransactionId:[m
+             transactionId || payment.providerTransactionId,[m
+[31m-          rawResponse: body as any,[m
+[31m-        },[m
+[32m+[m[32mrawResponse: verifiedRawResponse as any,        },[m
+       });[m
+ [m
+       const result = await fulfillOrder(order.id);[m
+[36m@@ -391,8 +485,7 @@[m [mif (isSuccess) {[m
+         status: "PAID",[m
+         paidAt: now,[m
+         providerTransactionId: transactionId,[m
+[31m-        rawResponse: body as any,[m
+[31m-      },[m
+[32m+[m[32mrawResponse: verifiedRawResponse as any,      },[m
+     });[m
+ [m
+     await prisma.auditLog.create({[m
+[36m@@ -439,8 +532,7 @@[m [mif (isSuccess) {[m
+           status: "PAID",[m
+           paidAt: now,[m
+           providerTransactionId: transactionId,[m
+[31m-          rawResponse: body as any,[m
+[31m-        },[m
+[32m+[m[32mrawResponse: verifiedRawResponse as any,        },[m
+       });[m
+     });[m
+ [m
+[36m@@ -464,18 +556,30 @@[m [mif (isSuccess) {[m
+ }[m
+ [m
+ [m
+[31m-    if (isFailedOrExpired) {[m
+[31m-      if (payment.status === "PENDING") {[m
+[31m-        await prisma.payment.update({[m
+[31m-          where: { id: payment.id },[m
+[31m-          data: {[m
+[31m-            status: transactionStatus === "expire" ? "EXPIRED" : "FAILED",[m
+[31m-            providerTransactionId: transactionId || payment.providerTransactionId,[m
+[31m-            rawResponse: body as any,[m
+[31m-          },[m
+[31m-        });[m
+[32m+[m[32m        if (isFailedOrExpired) {[m
+[32m+[m[32m      const updated = await prisma.payment.updateMany({[m
+[32m+[m[32m        where: {[m
+[32m+[m[32m          id: payment.id,[m
+[32m+[m[32m          status: "PENDING",[m
+[32m+[m[32m        },[m
+[32m+[m[32m        data: {[m
+[32m+[m[32m          status: transactionStatus === "expire" ? "EXPIRED" : "FAILED",[m
+[32m+[m[32m          providerTransactionId:[m
+[32m+[m[32m            transactionId || payment.providerTransactionId,[m
+[32m+[m[32mrawResponse: verifiedRawResponse as any,        },[m
+[32m+[m[32m      });[m
+[32m+[m
+[32m+[m[32m      if (updated.count === 0) {[m
+[32m+[m[32m        request.log.info([m
+[32m+[m[32m          { orderId, paymentId: payment.id, currentStatus: payment.status },[m
+[32m+[m[32m          "Notifikasi gagal diabaikan karena payment sudah tidak PENDING.",[m
+[32m+[m[32m        );[m
+       }[m
+[31m-      return reply.send({ status: "OK", message: `Transaksi berstatus ${transactionStatus}.` });[m
+[32m+[m
+[32m+[m[32m      return reply.send({[m
+[32m+[m[32m        status: "OK",[m
+[32m+[m[32m        message: `Transaksi berstatus ${transactionStatus}.`,[m
+[32m+[m[32m      });[m
+     }[m
+ [m
+     return reply.send({ status: "OK", message: "Notifikasi diterima." });[m

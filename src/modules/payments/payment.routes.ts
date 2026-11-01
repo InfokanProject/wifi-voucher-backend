@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { FastifyInstance } from "fastify";
 import { env } from "../../config/env";
 import { prisma } from "../../lib/prisma";
@@ -14,26 +13,6 @@ function getSnapUrl(): string {
   return env.MIDTRANS_IS_PRODUCTION
     ? "https://app.midtrans.com/snap/v1/transactions"
     : "https://app.sandbox.midtrans.com/snap/v1/transactions";
-}
-
-function verifyMidtransSignature(
-  orderId: string,
-  statusCode: string,
-  grossAmount: string,
-  signatureKey: string,
-): boolean {
-  if (!env.MIDTRANS_SERVER_KEY) return false;
-
-  // Format angka bulat ("3000")
-  const raw1 = `${orderId}${statusCode}${grossAmount}${env.MIDTRANS_SERVER_KEY}`;
-  const expected1 = createHash("sha512").update(raw1).digest("hex");
-  if (expected1.toLowerCase() === signatureKey.toLowerCase()) return true;
-
-  // Format desimal Midtrans Sandbox ("3000.00")
-  const formattedAmount = Number(parseFloat(grossAmount)).toFixed(2);
-  const raw2 = `${orderId}${statusCode}${formattedAmount}${env.MIDTRANS_SERVER_KEY}`;
-  const expected2 = createHash("sha512").update(raw2).digest("hex");
-  return expected2.toLowerCase() === signatureKey.toLowerCase();
 }
 
 export async function paymentRoutes(app: FastifyInstance) {
@@ -88,13 +67,29 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    const payment = order.payments.find(
+        const pendingPayments = order.payments.filter(
       (item) => item.status === "PENDING",
     );
 
-    if (!payment || payment.amount !== order.amount) {
+    if (pendingPayments.length !== 1) {
+      request.log.warn(
+        {
+          orderNumber: order.orderNumber,
+          pendingPaymentCount: pendingPayments.length,
+        },
+        "Jumlah payment pending tidak sesuai.",
+      );
+
       return reply.code(409).send({
-        error: "Payment pending tidak ditemukan atau nominal tidak cocok.",
+        error: "Payment pending tidak ditemukan atau tidak unik.",
+      });
+    }
+
+    const payment = pendingPayments[0];
+
+    if (payment.amount !== order.amount) {
+      return reply.code(409).send({
+        error: "Nominal payment tidak cocok dengan order.",
       });
     }
 
@@ -139,16 +134,14 @@ export async function paymentRoutes(app: FastifyInstance) {
           "Content-Type": "application/json",
           Accept: "application/json",
           Authorization: authHeader,
+          "X-Override-Notification": `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,
         },
         body: JSON.stringify({
           transaction_details: {
             order_id: order.orderNumber,
             gross_amount: order.amount,
           },
-                    override_notification_urls: [
-            `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,
-          ],
-          callbacks: {
+            callbacks: {
             finish: `${env.PUBLIC_APP_URL}/beli`,
           },
           item_details: [
@@ -262,64 +255,180 @@ export async function paymentRoutes(app: FastifyInstance) {
     }
 
     const orderId = String(body.order_id ?? "");
-    const statusCode = String(body.status_code ?? "");
-    const grossAmount = String(body.gross_amount ?? "");
-    const signatureKey = String(body.signature_key ?? "");
-    const transactionStatus = String(body.transaction_status ?? "");
-    const fraudStatus = String(body.fraud_status ?? "");
-    const transactionId = String(body.transaction_id ?? "");
 
-    if (!orderId || !statusCode || !grossAmount || !signatureKey) {
-      return reply.code(200).send({ status: "OK", message: "Ping/Parameter tidak lengkap." });
-    }
+if (!orderId) {
+  return reply.code(200).send({
+    status: "OK",
+    message: "Order ID tidak ditemukan.",
+  });
+}
 
-    if (!verifyMidtransSignature(orderId, statusCode, grossAmount, signatureKey)) {
-      request.log.warn({ orderId }, "Signature Midtrans notification tidak valid.");
-      return reply.send({ status: "OK", message: "Signature tidak cocok tapi diterima." });
-    }
+// Cari order lokal terlebih dahulu.
+const order = await prisma.order.findUnique({
+  where: { orderNumber: orderId },
+  include: {
+    package: true,
+    payments: true,
+    voucher: true,
+  },
+});
 
-    const order = await prisma.order.findUnique({
-      where: { orderNumber: orderId },
-      include: {
-        package: true,
-        payments: true,
-        voucher: true,
+if (!order) {
+  request.log.warn(
+    { orderId },
+    "Order notifikasi Midtrans tidak ditemukan.",
+  );
+
+  return reply.send({
+    status: "OK",
+    message: "Order dummy/test diterima.",
+  });
+}
+
+// Webhook hanya menjadi pemicu.
+// Status pembayaran diverifikasi langsung melalui Midtrans API.
+const statusBaseUrl = env.MIDTRANS_IS_PRODUCTION
+  ? "https://api.midtrans.com"
+  : "https://api.sandbox.midtrans.com";
+
+const statusUrl =
+  `${statusBaseUrl}/v2/${encodeURIComponent(order.orderNumber)}/status`;
+
+let midtransData: Record<string, any>;
+
+try {
+  const authHeader = `Basic ${Buffer.from(
+    env.MIDTRANS_SERVER_KEY + ":",
+  ).toString("base64")}`;
+
+  const statusResponse = await fetch(statusUrl, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: authHeader,
+    },
+  });
+
+  if (!statusResponse.ok) {
+    const responseText = await statusResponse.text();
+
+    request.log.error(
+      {
+        orderId,
+        httpStatus: statusResponse.status,
+        response: responseText,
       },
-    });
-
-    if (!order) {
-      request.log.warn({ orderId }, "Order notifikasi Midtrans tidak ditemukan.");
-      return reply.send({ status: "OK", message: "Order dummy/test diterima." });
-    }
-
-    const parsedAmount = Math.round(parseFloat(grossAmount));
-    if (parsedAmount !== order.amount) {
-      request.log.error(
-        { orderId, grossAmount, orderAmount: order.amount },
-        "Nominal pembayaran notifikasi Midtrans tidak cocok.",
-      );
-      return reply.send({ status: "OK", message: "Nominal tidak cocok." });
-    }
-
-    const payment = order.payments.find(
-      (p) => p.provider === "MIDTRANS" || p.status === "PENDING",
+      "Gagal mengambil status transaksi dari Midtrans.",
     );
 
-    if (!payment) {
-      return reply.send({ status: "OK", message: "Payment record tidak ditemukan." });
-    }
+    return reply.code(503).send({
+      status: "ERROR",
+      message: "Status pembayaran belum dapat diverifikasi.",
+    });
+  }
 
-    const isSuccess =
-      transactionStatus === "settlement" ||
-      (transactionStatus === "capture" && fraudStatus === "accept");
+  midtransData = (await statusResponse.json()) as Record<string, any>;
+} catch (err) {
+  request.log.error(
+    { err, orderId },
+    "Request GET Status API Midtrans gagal.",
+  );
 
-    const isFailedOrExpired =
-      transactionStatus === "deny" ||
-      transactionStatus === "cancel" ||
-      transactionStatus === "expire";
+  return reply.code(503).send({
+    status: "ERROR",
+    message: "Tidak dapat menghubungi Midtrans.",
+  });
+}
 
-    const now = new Date();
+// Ambil data pembayaran dari respons API yang sudah diautentikasi.
+const verifiedOrderId = String(midtransData.order_id ?? "");
+const statusCode = String(midtransData.status_code ?? "");
+const grossAmount = String(midtransData.gross_amount ?? "");
+const transactionStatus = String(
+  midtransData.transaction_status ?? "",
+);
+const fraudStatus = String(midtransData.fraud_status ?? "");
+const transactionId = String(midtransData.transaction_id ?? "");
 
+// Validasi identitas order dan nominal.
+const parsedAmount = Number(grossAmount);
+
+if (
+  verifiedOrderId !== order.orderNumber ||
+  statusCode !== "200" ||
+  !/^\d+(\.\d{1,2})?$/.test(grossAmount) ||
+  !Number.isFinite(parsedAmount) ||
+  parsedAmount !== Number(order.amount)
+) {
+  request.log.error(
+    {
+      orderId,
+      verifiedOrderId,
+      statusCode,
+      grossAmount,
+      orderAmount: Number(order.amount),
+    },
+    "Respons GET Status API Midtrans tidak cocok dengan order lokal.",
+  );
+
+  return reply.code(502).send({
+    status: "ERROR",
+    message: "Data transaksi Midtrans tidak cocok dengan order.",
+  });
+}
+
+// Pastikan hanya ada satu payment Midtrans.
+const midtransPayments = order.payments.filter(
+  (p) => p.provider === "MIDTRANS",
+);
+
+if (midtransPayments.length !== 1) {
+  request.log.error(
+    {
+      orderId,
+      midtransPaymentCount: midtransPayments.length,
+    },
+    "Jumlah payment Midtrans tidak sesuai.",
+  );
+
+  return reply.send({
+    status: "OK",
+    message: "Payment Midtrans tidak ditemukan atau tidak unik.",
+  });
+}
+
+const payment = midtransPayments[0];
+if (payment.amount !== order.amount) {
+  request.log.error(
+    {
+      orderId,
+      paymentAmount: payment.amount,
+      orderAmount: order.amount,
+    },
+    "Nominal payment Midtrans tidak cocok dengan order.",
+  );
+
+  return reply.send({
+    status: "OK",
+    message: "Nominal payment tidak cocok.",
+  });
+}
+
+const verifiedRawResponse = {
+  webhook: body,
+  status: midtransData,
+};
+
+const isSuccess =
+  transactionStatus === "settlement" ||
+  (transactionStatus === "capture" && fraudStatus === "accept");
+
+const isFailedOrExpired =
+  transactionStatus === "deny" ||
+  transactionStatus === "cancel" ||
+  transactionStatus === "expire";
+
+const now = new Date();
     
 if (isSuccess) {
   // Order sudah selesai: jangan pernah menerbitkan voucher ulang.
@@ -329,8 +438,8 @@ if (isSuccess) {
         where: { id: payment.id },
         data: {
           providerTransactionId: transactionId,
-          rawResponse: body as any,
-        },
+rawResponse: verifiedRawResponse as any,        
+      },
       });
     }
 
@@ -353,8 +462,7 @@ if (isSuccess) {
           paidAt: payment.paidAt ?? now,
           providerTransactionId:
             transactionId || payment.providerTransactionId,
-          rawResponse: body as any,
-        },
+rawResponse: verifiedRawResponse as any,        },
       });
 
       const result = await fulfillOrder(order.id);
@@ -391,8 +499,7 @@ if (isSuccess) {
         status: "PAID",
         paidAt: now,
         providerTransactionId: transactionId,
-        rawResponse: body as any,
-      },
+rawResponse: verifiedRawResponse as any,      },
     });
 
     await prisma.auditLog.create({
@@ -439,8 +546,7 @@ if (isSuccess) {
           status: "PAID",
           paidAt: now,
           providerTransactionId: transactionId,
-          rawResponse: body as any,
-        },
+rawResponse: verifiedRawResponse as any,        },
       });
     });
 
@@ -464,18 +570,30 @@ if (isSuccess) {
 }
 
 
-    if (isFailedOrExpired) {
-      if (payment.status === "PENDING") {
-        await prisma.payment.update({
-          where: { id: payment.id },
-          data: {
-            status: transactionStatus === "expire" ? "EXPIRED" : "FAILED",
-            providerTransactionId: transactionId || payment.providerTransactionId,
-            rawResponse: body as any,
-          },
-        });
+        if (isFailedOrExpired) {
+      const updated = await prisma.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: "PENDING",
+        },
+        data: {
+          status: transactionStatus === "expire" ? "EXPIRED" : "FAILED",
+          providerTransactionId:
+            transactionId || payment.providerTransactionId,
+rawResponse: verifiedRawResponse as any,        },
+      });
+
+      if (updated.count === 0) {
+        request.log.info(
+          { orderId, paymentId: payment.id, currentStatus: payment.status },
+          "Notifikasi gagal diabaikan karena payment sudah tidak PENDING.",
+        );
       }
-      return reply.send({ status: "OK", message: `Transaksi berstatus ${transactionStatus}.` });
+
+      return reply.send({
+        status: "OK",
+        message: `Transaksi berstatus ${transactionStatus}.`,
+      });
     }
 
     return reply.send({ status: "OK", message: "Notifikasi diterima." });
