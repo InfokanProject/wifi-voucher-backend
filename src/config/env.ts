@@ -37,6 +37,9 @@ export const env = {
   MIDTRANS_SERVER_KEY: process.env.MIDTRANS_SERVER_KEY ?? "",
   MIDTRANS_CLIENT_KEY: process.env.MIDTRANS_CLIENT_KEY ?? "",
 
+  WAROENGPAY_API_KEY: process.env.WAROENGPAY_API_KEY ?? "",
+  WAROENGPAY_WEBHOOK_SECRET: process.env.WAROENGPAY_WEBHOOK_SECRET ?? "",
+
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ?? "",
   SESSION_SECRET: process.env.SESSION_SECRET ?? "",
 };

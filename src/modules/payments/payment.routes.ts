@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { FastifyInstance } from "fastify";
 import { env } from "../../config/env";
 import { prisma } from "../../lib/prisma";
@@ -67,154 +68,147 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-        const pendingPayments = order.payments.filter(
-      (item) => item.status === "PENDING",
-    );
-
-    if (pendingPayments.length !== 1) {
-      request.log.warn(
-        {
-          orderNumber: order.orderNumber,
-          pendingPaymentCount: pendingPayments.length,
-        },
-        "Jumlah payment pending tidak sesuai.",
-      );
-
-      return reply.code(409).send({
-        error: "Payment pending tidak ditemukan atau tidak unik.",
-      });
-    }
-
-    const payment = pendingPayments[0];
-
-    if (payment.amount !== order.amount) {
-      return reply.code(409).send({
-        error: "Nominal payment tidak cocok dengan order.",
-      });
-    }
-
-    if (payment.provider === "MIDTRANS") {
-      const saved = payment.rawResponse;
-
-      if (
-        saved &&
-        typeof saved === "object" &&
-        !Array.isArray(saved) &&
-        typeof (saved as Record<string, unknown>).redirectUrl === "string"
-      ) {
-        return reply.send({
-          orderId: order.id,
-          orderNumber: order.orderNumber,
-          amount: order.amount,
-          redirectUrl: (saved as Record<string, unknown>).redirectUrl,
-          token: (saved as Record<string, unknown>).token ?? null,
+            const client = await prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`
+          WITH lock_result AS MATERIALIZED (
+            SELECT pg_advisory_xact_lock(hashtext(${order.id}))
+          )
+          SELECT 1::int AS locked FROM lock_result
+        `;
+          const currentOrder = await tx.order.findUnique({
+          where: { id: order.id },
+          include: { package: true },
         });
-      }
 
-      return reply.code(409).send({
-        error: "Transaksi Midtrans sudah diproses. Periksa status pesanan.",
-      });
-    }
+        if (
+          !currentOrder ||
+          currentOrder.status !== "PENDING" ||
+          !currentOrder.voucherId ||
+          (currentOrder.expiresAt !== null &&
+            currentOrder.expiresAt <= new Date())
+        ) {
+          throw new Error("ORDER_NOT_PAYABLE");
+        }
 
-    if (payment.provider !== "DEMO") {
-      return reply.code(409).send({
-        error: "Provider payment tidak sesuai.",
-      });
-    }
-
-    const authHeader = `Basic ${Buffer.from(env.MIDTRANS_SERVER_KEY + ":").toString("base64")}`;
-    const snapUrl = getSnapUrl();
-
-    let midtransResponse: Response;
-
-    try {
-      midtransResponse = await fetch(snapUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-          Authorization: authHeader,
-          "X-Override-Notification": `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,
-        },
-        body: JSON.stringify({
-          transaction_details: {
-            order_id: order.orderNumber,
-            gross_amount: order.amount,
-          },
-            callbacks: {
-            finish: `${env.PUBLIC_APP_URL}/beli`,
-          },
-          item_details: [
-            {
-              id: order.package.code,
-              price: order.amount,
-              quantity: 1,
-              name: `Voucher WiFi ${order.package.name}`,
-            },
-          ],
-          customer_details: {
-            email,
-            phone: order.customerIdentifier || "",
-          },
-        }),
-        signal: AbortSignal.timeout(15000),
-      });
-    } catch (error) {
-      request.log.error(
-        { err: error, orderNumber: order.orderNumber },
-        "Request Snap Midtrans gagal",
-      );
-
-      return reply.code(502).send({
-        error: "Midtrans tidak bisa dihubungi. Silakan coba lagi.",
-      });
-    }
-
-    let result: {
-      token?: string;
-      redirect_url?: string;
-      error_messages?: string[];
-    };
-
-    try {
-      result = await midtransResponse.json();
-    } catch {
-      return reply.code(502).send({
-        error: "Respons Snap Midtrans tidak valid.",
-      });
-    }
-
-    if (
-      !midtransResponse.ok ||
-      typeof result.redirect_url !== "string" ||
-      typeof result.token !== "string"
-    ) {
-      request.log.warn(
-        {
-          orderNumber: order.orderNumber,
-          httpStatus: midtransResponse.status,
-          errors: result.error_messages,
-        },
-        "Midtrans menolak pembuatan transaksi Snap",
-      );
-
-      return reply.code(502).send({
-        error: "Gagal membuat transaksi Midtrans. Periksa konfigurasi.",
-      });
-    }
-
-    try {
-      await prisma.$transaction(async (tx) => {
-        const updated = await tx.payment.updateMany({
+          const otherGatewayPayment = await tx.payment.findFirst({
           where: {
-            id: payment.id,
-            orderId: order.id,
-            provider: "DEMO",
+            orderId: currentOrder.id,
+            provider: "WAROENGPAY",
             status: "PENDING",
           },
+          select: { id: true },
+        });
+
+        if (otherGatewayPayment) {
+          return { conflict: true as const };
+        }
+
+        const existing = await tx.payment.findFirst({
+          where: {
+            orderId: currentOrder.id,
+            provider: "MIDTRANS",
+            status: "PENDING",
+          },
+          orderBy: { createdAt: "desc" },
+        });
+
+        if (existing) {
+          const saved = existing.rawResponse;
+
+          if (
+            saved &&
+            typeof saved === "object" &&
+            !Array.isArray(saved) &&
+            typeof (saved as Record<string, unknown>).redirectUrl === "string"
+          ) {
+            return {
+              existing: true,
+              order: currentOrder,
+              payment: existing,
+              redirectUrl: (saved as Record<string, unknown>).redirectUrl as string,
+              token:
+                typeof (saved as Record<string, unknown>).token === "string"
+                  ? (saved as Record<string, unknown>).token as string
+                  : null,
+            };
+          }
+
+          throw new Error("MIDTRANS_PAYMENT_ALREADY_EXISTS");
+        }
+
+        const payment = await tx.payment.create({
           data: {
+            orderId: currentOrder.id,
             provider: "MIDTRANS",
             method: "QRIS",
+            amount: currentOrder.amount,
+            status: "PENDING",
+          },
+        });
+
+        const authHeader = `Basic ${Buffer.from(
+          env.MIDTRANS_SERVER_KEY + ":",
+        ).toString("base64")}`;
+
+        const response = await fetch(getSnapUrl(), {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Authorization: authHeader,
+            "X-Override-Notification": `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,
+          },
+          body: JSON.stringify({
+            transaction_details: {
+              order_id: currentOrder.orderNumber,
+              gross_amount: currentOrder.amount,
+            },
+            callbacks: {
+              finish: `${env.PUBLIC_APP_URL}/beli`,
+            },
+            item_details: [
+              {
+                id: currentOrder.package.code,
+                price: currentOrder.amount,
+                quantity: 1,
+                name: `Voucher WiFi ${currentOrder.package.name}`,
+              },
+            ],
+            customer_details: {
+              email,
+              phone: currentOrder.customerIdentifier || "",
+            },
+          }),
+          signal: AbortSignal.timeout(15000),
+        });
+
+        const result = (await response.json()) as {
+          token?: string;
+          redirect_url?: string;
+          error_messages?: string[];
+        };
+
+        if (
+          !response.ok ||
+          typeof result.token !== "string" ||
+          typeof result.redirect_url !== "string"
+        ) {
+          request.log.warn(
+            {
+              orderNumber: currentOrder.orderNumber,
+              httpStatus: response.status,
+              errors: result.error_messages,
+            },
+            "Midtrans menolak pembuatan transaksi Snap",
+          );
+
+          throw new Error("MIDTRANS_SNAP_CREATION_FAILED");
+        }
+
+        await tx.payment.update({
+          where: { id: payment.id },
+          data: {
             rawResponse: {
               token: result.token,
               redirectUrl: result.redirect_url,
@@ -222,27 +216,32 @@ export async function paymentRoutes(app: FastifyInstance) {
           },
         });
 
-        if (updated.count !== 1) {
-          throw new Error("PAYMENT_CHANGED_DURING_TRANSACTION_CREATION");
-        }
-      });
-    } catch (error) {
-      request.log.error(
-        { err: error, orderNumber: order.orderNumber },
-        "Transaksi Snap dibuat tetapi penyimpanan payment gagal",
-      );
+        return {
+          existing: false,
+          order: currentOrder,
+          payment,
+          redirectUrl: result.redirect_url,
+          token: result.token,
+        };
+      },
+      {
+        maxWait: 10000,
+        timeout: 30000,
+      },
+    );
 
+        if ("conflict" in client) {
       return reply.code(409).send({
-        error: "Transaksi mungkin sudah dibuat. Periksa status pesanan.",
+        error: "Order sudah memiliki invoice aktif dari gateway lain.",
       });
     }
 
     return reply.send({
-      orderId: order.id,
-      orderNumber: order.orderNumber,
-      amount: order.amount,
-      redirectUrl: result.redirect_url,
-      token: result.token,
+      orderId: client.order.id,
+      orderNumber: client.order.orderNumber,
+      amount: client.order.amount,
+      redirectUrl: client.redirectUrl,
+      token: client.token,
     });
   });
 
@@ -432,14 +431,51 @@ const now = new Date();
     
 if (isSuccess) {
   // Order sudah selesai: jangan pernah menerbitkan voucher ulang.
+    // Order sudah selesai: jangan pernah menerbitkan voucher ulang.
   if (order.status === "FULFILLED") {
+    if (order.winningPaymentId !== payment.id) {
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: "PAID",
+          paidAt: payment.paidAt ?? now,
+          providerTransactionId:
+            transactionId || payment.providerTransactionId,
+          rawResponse: verifiedRawResponse as any,
+        },
+      });
+
+      if (payment.status !== "PAID") {
+        await prisma.auditLog.create({
+          data: {
+            action: "LATE_PAYMENT_RECONCILIATION_REQUIRED",
+            entityType: "Order",
+            entityId: order.id,
+            description: `Pembayaran Midtrans bukan pemenang untuk order ${order.orderNumber}.`,
+            metadata: {
+              orderNumber: order.orderNumber,
+              amount: order.amount,
+              transactionId,
+              winningPaymentId: order.winningPaymentId,
+              paymentId: payment.id,
+            },
+          },
+        });
+      }
+
+      return reply.send({
+        status: "OK",
+        message: "Pembayaran tambahan dicatat untuk rekonsiliasi.",
+      });
+    }
+
     if (!payment.providerTransactionId && transactionId) {
       await prisma.payment.update({
         where: { id: payment.id },
         data: {
           providerTransactionId: transactionId,
-rawResponse: verifiedRawResponse as any,        
-      },
+          rawResponse: verifiedRawResponse as any,
+        },
       });
     }
 
@@ -449,11 +485,47 @@ rawResponse: verifiedRawResponse as any,
     });
   }
 
-  // Pemulihan fulfillment jika pembayaran sudah tercatat.
+  // Pemulihan fulfillment hanya boleh dilakukan oleh payment pemenang.
   if (
     order.status === "PAID" ||
     order.status === "FULFILLING"
   ) {
+    if (order.winningPaymentId !== payment.id) {
+      await prisma.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: "PAID",
+          paidAt: payment.paidAt ?? now,
+          providerTransactionId:
+            transactionId || payment.providerTransactionId,
+          rawResponse: verifiedRawResponse as any,
+        },
+      });
+
+      if (payment.status !== "PAID") {
+        await prisma.auditLog.create({
+          data: {
+            action: "LATE_PAYMENT_RECONCILIATION_REQUIRED",
+            entityType: "Order",
+            entityId: order.id,
+            description: `Pembayaran Midtrans bukan pemenang untuk order ${order.orderNumber}.`,
+            metadata: {
+              orderNumber: order.orderNumber,
+              amount: order.amount,
+              transactionId,
+              winningPaymentId: order.winningPaymentId,
+              paymentId: payment.id,
+            },
+          },
+        });
+      }
+
+      return reply.send({
+        status: "OK",
+        message: "Pembayaran tambahan dicatat untuk rekonsiliasi.",
+      });
+    }
+
     try {
       await prisma.payment.update({
         where: { id: payment.id },
@@ -462,7 +534,8 @@ rawResponse: verifiedRawResponse as any,
           paidAt: payment.paidAt ?? now,
           providerTransactionId:
             transactionId || payment.providerTransactionId,
-rawResponse: verifiedRawResponse as any,        },
+          rawResponse: verifiedRawResponse as any,
+        },
       });
 
       const result = await fulfillOrder(order.id);
@@ -524,15 +597,23 @@ rawResponse: verifiedRawResponse as any,      },
   }
 
   try {
-    await prisma.$transaction(async (tx) => {
+        await prisma.$transaction(async (tx) => {
+      // Klaim order terlebih dahulu. Hanya satu payment dari
+      // seluruh provider yang boleh menjadi pemenang.
       const claimed = await tx.order.updateMany({
         where: {
           id: order.id,
           status: "PENDING",
+          winningPaymentId: null,
+          OR: [
+            { expiresAt: null },
+            { expiresAt: { gt: now } },
+          ],
         },
         data: {
           status: "PAID",
           paidAt: now,
+          winningPaymentId: payment.id,
         },
       });
 
@@ -540,15 +621,28 @@ rawResponse: verifiedRawResponse as any,      },
         throw new Error("ORDER_ALREADY_PROCESSED");
       }
 
-      await tx.payment.update({
-        where: { id: payment.id },
+      const paymentUpdated = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          orderId: order.id,
+          provider: "MIDTRANS",
+          status: "PENDING",
+          amount: order.amount,
+        },
         data: {
           status: "PAID",
           paidAt: now,
           providerTransactionId: transactionId,
-rawResponse: verifiedRawResponse as any,        },
+          rawResponse: verifiedRawResponse as any,
+        },
       });
+
+      if (paymentUpdated.count !== 1) {
+        throw new Error("PAYMENT_UPDATE_FAILED_AFTER_ORDER_CLAIM");
+      }
     });
+
+
 
     await fulfillOrder(order.id);
 
@@ -599,7 +693,691 @@ rawResponse: verifiedRawResponse as any,        },
     return reply.send({ status: "OK", message: "Notifikasi diterima." });
   });
 
-  // 3. Endpoint pembayaran demo
+    // 3. Membuat invoice WaroengPay QRIS
+  app.post<{
+    Params: { orderId: string };
+  }>("/api/payments/waroengpay/:orderId/create", async (request, reply) => {
+    if (
+      !env.WAROENGPAY_API_KEY ||
+      !env.WAROENGPAY_API_KEY.startsWith("wp_test_")
+    ) {
+      return reply.code(503).send({
+        error: "Konfigurasi WaroengPay Sandbox belum tersedia.",
+      });
+    }
+
+    if (!env.PUBLIC_APP_URL) {
+      return reply.code(503).send({
+        error: "PUBLIC_APP_URL belum dikonfigurasi.",
+      });
+    }
+
+    const { orderId } = request.params;
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+    });
+
+    if (!order) {
+      return reply.code(404).send({
+        error: "Order tidak ditemukan.",
+      });
+    }
+
+    const now = new Date();
+
+    if (
+      order.status !== "PENDING" ||
+      !order.voucherId ||
+      (order.expiresAt !== null && order.expiresAt <= now)
+    ) {
+      return reply.code(409).send({
+        error: "Order tidak lagi bisa dibayar.",
+      });
+    }
+
+    if (
+      order.expiresAt &&
+      order.expiresAt.getTime() - now.getTime() < 5 * 60 * 1000
+    ) {
+      return reply.code(409).send({
+        error: "Sisa waktu order kurang dari 5 menit. Buat order baru.",
+      });
+    }
+
+    try {
+      const result = await prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`
+            WITH lock_result AS MATERIALIZED (
+              SELECT pg_advisory_xact_lock(hashtext(${order.id}))
+            )
+            SELECT 1::int AS locked FROM lock_result
+          `;
+
+          const currentOrder = await tx.order.findUnique({
+            where: { id: order.id },
+            include: { package: true },
+          });
+
+          if (
+            !currentOrder ||
+            currentOrder.status !== "PENDING" ||
+            !currentOrder.voucherId ||
+            (currentOrder.expiresAt !== null &&
+              currentOrder.expiresAt <= new Date())
+          ) {
+            throw new Error("ORDER_NOT_PAYABLE");
+          }
+
+            const otherGatewayPayment = await tx.payment.findFirst({
+            where: {
+              orderId: currentOrder.id,
+              provider: "MIDTRANS",
+              status: "PENDING",
+            },
+            select: { id: true },
+          });
+
+          if (otherGatewayPayment) {
+            throw new Error("OTHER_GATEWAY_PAYMENT_PENDING");
+          }
+
+          const existing = await tx.payment.findFirst({
+            where: {
+              orderId: currentOrder.id,
+              provider: "WAROENGPAY",
+              status: "PENDING",
+            },
+            orderBy: { createdAt: "desc" },
+          });
+
+          if (
+            existing?.providerTransactionId &&
+            existing.rawResponse &&
+            typeof existing.rawResponse === "object" &&
+            !Array.isArray(existing.rawResponse)
+          ) {
+            const saved = existing.rawResponse as Record<string, unknown>;
+
+            if (
+              typeof saved.pay_url === "string" &&
+              typeof saved.amount === "number"
+            ) {
+              return {
+                order: currentOrder,
+                invoiceId: existing.providerTransactionId,
+                amount: existing.amount,
+                payUrl: saved.pay_url,
+                qris: saved.qris ?? null,
+                expiresAt: saved.expires_at ?? null,
+              };
+            }
+          }
+
+          const remainingMinutes = currentOrder.expiresAt
+            ? Math.floor(
+                (currentOrder.expiresAt.getTime() - Date.now()) / 60000,
+              )
+            : 60;
+
+          if (remainingMinutes < 5) {
+            throw new Error("ORDER_EXPIRING_SOON");
+          }
+
+          const expiresIn = Math.min(60, remainingMinutes);
+
+          const payment =
+            existing ??
+            (await tx.payment.create({
+              data: {
+                orderId: currentOrder.id,
+                provider: "WAROENGPAY",
+                method: "QRIS",
+                amount: currentOrder.amount,
+                status: "PENDING",
+              },
+            }));
+
+          const response = await fetch(
+            "https://waroengpay.com/api/payments",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${env.WAROENGPAY_API_KEY}`,
+                "Content-Type": "application/json",
+                Accept: "application/json",
+                "Idempotency-Key": currentOrder.orderNumber,
+              },
+              body: JSON.stringify({
+                amount: currentOrder.amount,
+                description: `Voucher WiFi ${currentOrder.package.name}`,
+                callback_url: `${env.PUBLIC_APP_URL}/api/payments/waroengpay/webhook`,
+                redirect_url: `${env.PUBLIC_APP_URL}/beli`,
+                expires_in: expiresIn,
+              }),
+              signal: AbortSignal.timeout(15000),
+            },
+          );
+
+          const invoice = (await response.json()) as Record<string, unknown>;
+
+          if (
+            !response.ok ||
+            typeof invoice.id !== "string" ||
+            typeof invoice.base_amount !== "number" ||
+            typeof invoice.amount !== "number" ||
+            typeof invoice.pay_url !== "string" ||
+            invoice.base_amount !== currentOrder.amount ||
+            !Number.isInteger(invoice.amount) ||
+            invoice.amount < invoice.base_amount ||
+            invoice.livemode !== false
+          ) {
+            request.log.error(
+              {
+                orderNumber: currentOrder.orderNumber,
+                httpStatus: response.status,
+                response: invoice,
+              },
+              "WaroengPay menolak pembuatan invoice atau respons tidak valid.",
+            );
+
+            throw new Error("WAROENGPAY_INVOICE_CREATION_FAILED");
+          }
+
+          const savedInvoice = {
+            ...invoice,
+          };
+
+          await tx.payment.update({
+            where: { id: payment.id },
+            data: {
+              amount: invoice.amount,
+              providerTransactionId: invoice.id,
+              rawResponse: savedInvoice as any,
+            },
+          });
+
+          return {
+            order: currentOrder,
+            invoiceId: invoice.id,
+            amount: invoice.amount,
+            payUrl: invoice.pay_url,
+            qris: invoice.qris ?? null,
+            expiresAt: invoice.expires_at ?? null,
+          };
+        },
+        {
+          maxWait: 10000,
+          timeout: 30000,
+        },
+      );
+
+      return reply.send({
+        ok: true,
+        orderId: result.order.id,
+        orderNumber: result.order.orderNumber,
+        invoiceId: result.invoiceId,
+        amount: result.amount,
+        payUrl: result.payUrl,
+        qris: result.qris,
+        expiresAt: result.expiresAt,
+      });
+        } catch (err) {
+      request.log.error(
+        { err, orderId },
+        "Gagal membuat invoice WaroengPay.",
+      );
+
+      if (
+        err instanceof Error &&
+        (err.message === "ORDER_NOT_PAYABLE" ||
+          err.message === "ORDER_EXPIRING_SOON" ||
+          err.message === "OTHER_GATEWAY_PAYMENT_PENDING")
+      ) {
+        return reply.code(409).send({
+          error:
+            err.message === "OTHER_GATEWAY_PAYMENT_PENDING"
+              ? "Order sudah memiliki invoice aktif dari gateway lain."
+              : "Order tidak lagi bisa dibayar.",
+        });
+      }
+
+      return reply.code(502).send({
+        error: "Gagal membuat invoice WaroengPay.",
+      });
+    }
+  });
+
+   // Webhook WaroengPay
+  app.post(
+    "/api/payments/waroengpay/webhook",
+    {
+      config: {
+        rawBody: true,
+      },
+    },
+    async (request, reply) => {
+      if (!env.WAROENGPAY_WEBHOOK_SECRET) {
+        request.log.error("WaroengPay webhook secret belum dikonfigurasi.");
+        return reply.code(503).send({ error: "Webhook belum dikonfigurasi." });
+      }
+
+      const getHeader = (name: string): string => {
+        const value = request.headers[name.toLowerCase()];
+        return Array.isArray(value) ? value[0] ?? "" : value ?? "";
+      };
+
+      const eventHeader = getHeader("x-waroengpay-event");
+      const timestampHeader = getHeader("x-waroengpay-timestamp");
+      const signatureHeader = getHeader("x-signature");
+
+      const rawBody = Buffer.isBuffer(request.rawBody)
+        ? request.rawBody.toString("utf8")
+        : request.rawBody;
+
+      if (
+        typeof rawBody !== "string" ||
+        !eventHeader ||
+        !timestampHeader ||
+        !signatureHeader
+      ) {
+        return reply.code(400).send({
+          error: "Header atau raw body webhook tidak lengkap.",
+        });
+      }
+
+      // Timestamp WaroengPay menggunakan Unix timestamp dalam detik.
+      const timestamp = Number(timestampHeader);
+
+      if (
+        !Number.isSafeInteger(timestamp) ||
+        Math.abs(Math.floor(Date.now() / 1000) - timestamp) > 300
+      ) {
+        return reply.code(401).send({
+          error: "Timestamp webhook tidak valid atau sudah kedaluwarsa.",
+        });
+      }
+
+      // Verifikasi HMAC-SHA256 menggunakan raw body asli.
+      const expectedSignature = createHmac(
+        "sha256",
+        env.WAROENGPAY_WEBHOOK_SECRET,
+      )
+        .update(`${timestampHeader}.${rawBody}`)
+        .digest();
+
+      const suppliedHex = signatureHeader.replace(/^sha256=/i, "").trim();
+
+      if (!/^[a-f0-9]{64}$/i.test(suppliedHex)) {
+        return reply.code(401).send({
+          error: "Format signature tidak valid.",
+        });
+      }
+
+      const suppliedSignature = Buffer.from(suppliedHex, "hex");
+
+      if (
+        suppliedSignature.length !== expectedSignature.length ||
+        !timingSafeEqual(suppliedSignature, expectedSignature)
+      ) {
+        request.log.warn("Signature webhook WaroengPay tidak cocok.");
+
+        return reply.code(401).send({
+          error: "Signature tidak valid.",
+        });
+      }
+
+      const body = request.body as Record<string, any> | null;
+
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return reply.code(400).send({
+          error: "Payload webhook tidak valid.",
+        });
+      }
+
+      if (body.event !== eventHeader) {
+        return reply.code(400).send({
+          error: "Event header dan payload tidak cocok.",
+        });
+      }
+
+      // Sandbox harus menerima livemode=false.
+      // Sebaliknya, kredensial Live hanya menerima livemode=true.
+      const isSandbox = env.WAROENGPAY_API_KEY.startsWith("wp_test_");
+
+      if (body.livemode !== !isSandbox) {
+        request.log.warn(
+          {
+            event: body.event,
+            livemode: body.livemode,
+            isSandbox,
+          },
+          "Webhook WaroengPay diabaikan karena mode tidak cocok.",
+        );
+
+        return reply.send({
+          status: "OK",
+          message: "Mode transaksi tidak cocok.",
+        });
+      }
+
+      // Ping hanya digunakan untuk menguji konektivitas webhook.
+      if (body.event === "ping") {
+        return reply.send({
+          status: "OK",
+          message: "Pong.",
+        });
+      }
+
+      const eventId =
+        typeof body.id === "string" ? body.id.trim() : "";
+
+      if (
+        !eventId ||
+        eventId.length > 160 ||
+        !["payment.paid", "payment.expired", "payment.cancelled"].includes(
+          body.event,
+        )
+      ) {
+        return reply.code(400).send({
+          error: "Identitas atau tipe event tidak valid.",
+        });
+      }
+
+      const data = body.data as Record<string, any> | null;
+
+      if (
+        !data ||
+        typeof data !== "object" ||
+        typeof data.id !== "string" ||
+        !Number.isInteger(data.base_amount) ||
+        !Number.isInteger(data.amount)
+      ) {
+        return reply.code(400).send({
+          error: "Data invoice webhook tidak valid.",
+        });
+      }
+
+      // Cari berdasarkan ID invoice WaroengPay, bukan reference.
+      const payment = await prisma.payment.findFirst({
+        where: {
+          provider: "WAROENGPAY",
+          providerTransactionId: data.id,
+        },
+        include: {
+          order: true,
+        },
+      });
+
+      if (!payment) {
+        request.log.warn(
+          { invoiceId: data.id, eventId },
+          "Invoice WaroengPay tidak ditemukan di database.",
+        );
+
+        return reply.send({
+          status: "OK",
+          message: "Invoice tidak ditemukan.",
+        });
+      }
+
+      // Validasi nominal dasar dan nominal akhir termasuk kode unik.
+      if (
+        data.base_amount !== payment.order.amount ||
+        data.amount !== payment.amount
+      ) {
+        request.log.error(
+          {
+            invoiceId: data.id,
+            baseAmount: data.base_amount,
+            orderAmount: payment.order.amount,
+            invoiceAmount: data.amount,
+            paymentAmount: payment.amount,
+          },
+          "Nominal invoice WaroengPay tidak cocok.",
+        );
+
+        return reply.code(400).send({
+          error: "Nominal invoice tidak cocok.",
+        });
+      }
+
+      const now = new Date();
+      const isPaid = body.event === "payment.paid";
+
+      let shouldFulfill = false;
+
+      try {
+        const result = await prisma.$transaction(async (tx) => {
+          // Kunci order agar dua webhook tidak memenangkan order bersamaan.
+          await tx.$queryRaw`
+            WITH lock_result AS MATERIALIZED (
+              SELECT pg_advisory_xact_lock(hashtext(${payment.orderId}))
+            )
+            SELECT 1::int AS locked FROM lock_result
+          `;
+
+          // Event dicatat dalam transaksi yang sama dengan perubahan payment.
+          // Jika transaksi gagal, pencatatan event ikut rollback.
+          await tx.webhookEvent.create({
+            data: {
+              provider: "WAROENGPAY",
+              eventId,
+              eventType: body.event,
+              payload: body as any,
+            },
+          });
+
+          const currentPayment = await tx.payment.findUnique({
+            where: { id: payment.id },
+          });
+
+          const currentOrder = await tx.order.findUnique({
+            where: { id: payment.orderId },
+          });
+
+          if (!currentPayment || !currentOrder) {
+            throw new Error("PAYMENT_OR_ORDER_NOT_FOUND");
+          }
+
+          if (isPaid) {
+            // Pembayaran berhasil: status payment tetap dicatat PAID,
+            // termasuk jika invoice sebelumnya sudah EXPIRED atau FAILED.
+            await tx.payment.update({
+              where: { id: currentPayment.id },
+              data: {
+                status: "PAID",
+                paidAt: currentPayment.paidAt ?? now,
+                rawResponse: {
+                  webhook: body,
+                } as any,
+              },
+            });
+
+            // Order sudah selesai dengan payment ini sebagai pemenang.
+            if (
+              currentOrder.status === "FULFILLED" &&
+              currentOrder.winningPaymentId === currentPayment.id
+            ) {
+              return { fulfill: false };
+            }
+
+            // Order sudah PAID/FULFILLING oleh payment yang sama.
+            // Panggil fulfillment untuk pemulihan jika diperlukan.
+            if (
+              (currentOrder.status === "PAID" ||
+                currentOrder.status === "FULFILLING") &&
+              currentOrder.winningPaymentId === currentPayment.id
+            ) {
+              return { fulfill: true };
+            }
+
+            // Hanya order PENDING yang belum kedaluwarsa dan belum
+            // memiliki pemenang yang boleh diklaim.
+            if (
+              currentOrder.status === "PENDING" &&
+              currentOrder.winningPaymentId === null &&
+              (!currentOrder.expiresAt ||
+                currentOrder.expiresAt > now)
+            ) {
+              const claimed = await tx.order.updateMany({
+                where: {
+                  id: currentOrder.id,
+                  status: "PENDING",
+                  winningPaymentId: null,
+                  OR: [
+                    { expiresAt: null },
+                    { expiresAt: { gt: now } },
+                  ],
+                },
+                data: {
+                  status: "PAID",
+                  paidAt: now,
+                  winningPaymentId: currentPayment.id,
+                },
+              });
+
+              if (claimed.count === 1) {
+                return { fulfill: true };
+              }
+            }
+
+            // Pembayaran terlambat atau payment lain sudah memenangkan order.
+            await tx.auditLog.create({
+              data: {
+                action: "LATE_PAYMENT_RECONCILIATION_REQUIRED",
+                entityType: "Order",
+                entityId: currentOrder.id,
+                description:
+                  `Pembayaran WaroengPay perlu rekonsiliasi untuk order ${currentOrder.orderNumber}.`,
+                metadata: {
+                  orderNumber: currentOrder.orderNumber,
+                  invoiceId: data.id,
+                  amount: data.amount,
+                  baseAmount: data.base_amount,
+                  eventId,
+                  late: data.late === true,
+                  orderStatus: currentOrder.status,
+                  winningPaymentId: currentOrder.winningPaymentId,
+                  paymentId: currentPayment.id,
+                },
+              },
+            });
+
+            return { fulfill: false };
+          }
+
+          // Event expired/cancelled tidak boleh menurunkan status
+          // payment yang sudah PAID.
+          await tx.payment.updateMany({
+            where: {
+              id: currentPayment.id,
+              status: "PENDING",
+            },
+            data: {
+              status:
+                body.event === "payment.expired" ? "EXPIRED" : "FAILED",
+              rawResponse: {
+                webhook: body,
+              } as any,
+            },
+          });
+
+          return { fulfill: false };
+        });
+
+        shouldFulfill = result.fulfill;
+      } catch (err) {
+                // Event duplikat: coba pulihkan fulfillment jika payment
+        // ini memang pemenang order dan order belum selesai.
+        if (
+          typeof err === "object" &&
+          err !== null &&
+          "code" in err &&
+          err.code === "P2002"
+        ) {
+          if (isPaid) {
+            const latestOrder = await prisma.order.findUnique({
+              where: { id: payment.orderId },
+              select: {
+                status: true,
+                winningPaymentId: true,
+              },
+            });
+
+            if (
+              latestOrder?.winningPaymentId === payment.id &&
+              (latestOrder.status === "PAID" ||
+                latestOrder.status === "FULFILLING")
+            ) {
+              try {
+                await fulfillOrder(payment.orderId);
+
+                return reply.send({
+                  status: "OK",
+                  message: "Fulfillment berhasil dipulihkan.",
+                });
+              } catch (fulfillmentError) {
+                request.log.error(
+                  {
+                    err: fulfillmentError,
+                    orderId: payment.orderId,
+                    eventId,
+                  },
+                  "Pemulihan fulfillment dari webhook duplikat gagal.",
+                );
+
+                return reply.code(500).send({
+                  error: "Fulfillment belum selesai.",
+                });
+              }
+            }
+          }
+
+          return reply.send({
+            status: "OK",
+            message: "Event sudah pernah diproses.",
+          });
+        }
+
+        request.log.error(
+          { err, eventId, invoiceId: data.id },
+          "Gagal memproses webhook WaroengPay.",
+        );
+
+        return reply.code(500).send({
+          error: "Webhook belum berhasil diproses.",
+        });
+      }
+
+      if (shouldFulfill) {
+        try {
+          await fulfillOrder(payment.orderId);
+        } catch (err) {
+          request.log.error(
+            { err, orderId: payment.orderId, eventId },
+            "Fulfillment WaroengPay gagal.",
+          );
+
+          return reply.code(500).send({
+            error: "Pembayaran tercatat, tetapi fulfillment belum selesai.",
+          });
+        }
+      }
+
+      return reply.send({
+        status: "OK",
+        message: isPaid
+          ? shouldFulfill
+            ? "Pembayaran berhasil diproses."
+            : "Pembayaran dicatat."
+          : "Status invoice berhasil diperbarui.",
+      });
+    },
+  );
+
+  // 4. Endpoint pembayaran demo
   app.post<{
     Params: { orderId: string };
   }>("/api/payments/demo/:orderId/pay", async (request, reply) => {
@@ -674,33 +1452,36 @@ rawResponse: verifiedRawResponse as any,        },
     try {
       paymentResult = await prisma.$transaction(async (tx) => {
         const claimedOrder = await tx.order.updateMany({
-          where: {
-            id: order.id,
-            status: "PENDING",
-            OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
-          },
-          data: {
-            status: "PAID",
-            paidAt: now,
-          },
-        });
+  where: {
+    id: order.id,
+    status: "PENDING",
+    winningPaymentId: null,
+    OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+  },
+  data: {
+    status: "PAID",
+    paidAt: now,
+    winningPaymentId: payment.id,
+  },
+});
 
         if (claimedOrder.count !== 1) {
           throw new Error("ORDER_EXPIRED_OR_ALREADY_PROCESSED");
         }
 
         const updatedPayment = await tx.payment.updateMany({
-          where: {
-            id: payment.id,
-            orderId: order.id,
-            status: "PENDING",
-          },
-          data: {
-            status: "PAID",
-            paidAt: now,
-            providerTransactionId,
-          },
-        });
+  where: {
+    id: payment.id,
+    orderId: order.id,
+    provider: "DEMO",
+    status: "PENDING",
+  },
+  data: {
+    status: "PAID",
+    paidAt: now,
+    providerTransactionId,
+  },
+});
 
         if (updatedPayment.count !== 1) {
           throw new Error("PAYMENT_ALREADY_PROCESSED");
@@ -917,41 +1698,67 @@ rawResponse: verifiedRawResponse as any,        },
       });
     }
 
-    const payment = order.payments.find(
-      (item) => item.status === "PENDING",
-    );
-
-    if (!payment) {
-      return reply.code(409).send({
-        error: "Order tidak memiliki pembayaran pending.",
-      });
-    }
-
-    try {
+            try {
       await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`
+          WITH lock_result AS MATERIALIZED (
+            SELECT pg_advisory_xact_lock(hashtext(${order.id}))
+          )
+          SELECT 1::int AS locked FROM lock_result
+        `;
+
+                const activeGatewayPayment = await tx.payment.findFirst({
+          where: {
+            orderId: order.id,
+            provider: {
+              in: ["MIDTRANS", "WAROENGPAY"],
+            },
+            status: "PENDING",
+          },
+          select: {
+            id: true,
+            provider: true,
+          },
+        });
+
+        if (activeGatewayPayment) {
+          throw new Error("ACTIVE_GATEWAY_PAYMENT_EXISTS");
+        }
+
+        const cashPayment = await tx.payment.create({
+          data: {
+            orderId: order.id,
+            provider: "CASH",
+            method: "MANUAL",
+            amount: order.amount,
+            status: "PAID",
+            paidAt: now,
+            providerTransactionId: `MANUAL-${order.orderNumber}`,
+            ...(reference ? { rawResponse: { reference } } : {}),
+          },
+        });
+
         const claimedOrder = await tx.order.updateMany({
           where: {
             id: order.id,
             status: "PENDING",
+            winningPaymentId: null,
+            voucherId: order.voucherId,
+            OR: [
+              { expiresAt: null },
+              { expiresAt: { gt: now } },
+            ],
           },
           data: {
             status: "PAID",
             paidAt: now,
+            winningPaymentId: cashPayment.id,
           },
         });
 
         if (claimedOrder.count !== 1) {
           throw new Error("ORDER_CHANGED");
         }
-
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: {
-            status: "PAID",
-            paidAt: now,
-            providerTransactionId: reference || `MANUAL-${Date.now()}`,
-          },
-        });
       });
 
       const fulfillmentResult = await fulfillOrder(order.id);
@@ -962,7 +1769,17 @@ rawResponse: verifiedRawResponse as any,        },
         orderNumber: order.orderNumber,
         voucherCode: fulfillmentResult.voucher?.code,
       });
-    } catch (err) {
+        } catch (err) {
+      if (
+        err instanceof Error &&
+        err.message === "ACTIVE_GATEWAY_PAYMENT_EXISTS"
+      ) {
+        return reply.code(409).send({
+          error:
+            "Order masih memiliki invoice pembayaran online aktif. Batalkan atau tunggu invoice kedaluwarsa sebelum mengonfirmasi pembayaran manual.",
+        });
+      }
+
       request.log.error(err);
       return reply.code(500).send({
         error: "Gagal mengonfirmasi pembayaran manual.",

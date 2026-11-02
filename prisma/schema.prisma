@@ -41,43 +41,43 @@ enum PaymentMethod {
 }
 
 model Package {
-  id              String    @id @default(uuid()) @db.Uuid
-  code            String    @unique @db.VarChar(20)
-  name            String    @db.VarChar(100)
+  id              String   @id @default(uuid()) @db.Uuid
+  code            String   @unique @db.VarChar(20)
+  name            String   @db.VarChar(100)
   durationMinutes Int
   speedMbps       Int
   price           Int
-  isActive        Boolean   @default(true)
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  vouchers         Voucher[]
-  orders           Order[]
+  vouchers Voucher[]
+  orders   Order[]
 
   @@index([isActive])
   @@map("packages")
 }
 
 model Voucher {
-  id                String        @id @default(uuid()) @db.Uuid
-  packageId         String        @db.Uuid
-  code              String        @unique @db.VarChar(64)
-  username          String        @unique @db.VarChar(64)
-  password          String        @db.VarChar(128)
-  status            VoucherStatus @default(STOCK)
-  mikrotikUsername  String?       @db.VarChar(64)
-  mikrotikDeviceId  String?       @db.Uuid
-  reservedUntil     DateTime?
-  soldAt            DateTime?
-  activatedAt       DateTime?
-  expiresAt         DateTime?
-  expiredAt         DateTime?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
+  id               String        @id @default(uuid()) @db.Uuid
+  packageId        String        @db.Uuid
+  code             String        @unique @db.VarChar(64)
+  username         String        @unique @db.VarChar(64)
+  password         String        @db.VarChar(128)
+  status           VoucherStatus @default(STOCK)
+  mikrotikUsername String?       @db.VarChar(64)
+  mikrotikDeviceId String?       @db.Uuid
+  reservedUntil    DateTime?
+  soldAt           DateTime?
+  activatedAt      DateTime?
+  expiresAt        DateTime?
+  expiredAt        DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
 
-  package           Package       @relation(fields: [packageId], references: [id])
-  mikrotikDevice    MikrotikDevice? @relation(fields: [mikrotikDeviceId], references: [id])
-  order             Order?
+  package        Package         @relation(fields: [packageId], references: [id])
+  mikrotikDevice MikrotikDevice? @relation(fields: [mikrotikDeviceId], references: [id])
+  order          Order?
 
   @@index([packageId, status])
   @@index([status, reservedUntil])
@@ -86,23 +86,24 @@ model Voucher {
 }
 
 model Order {
-  id                   String      @id @default(uuid()) @db.Uuid
-  orderNumber          String      @unique @db.VarChar(40)
-  idempotencyKey       String?     @unique @db.VarChar(80)
-  packageId            String      @db.Uuid
-  voucherId            String?     @unique @db.Uuid
-  customerIdentifier   String?     @db.VarChar(120)
-  amount               Int
-  status               OrderStatus @default(PENDING)
-  expiresAt             DateTime?
-  paidAt                DateTime?
-  fulfilledAt           DateTime?
-  createdAt             DateTime    @default(now())
-  updatedAt             DateTime    @updatedAt
+  id                 String      @id @default(uuid()) @db.Uuid
+  orderNumber        String      @unique @db.VarChar(40)
+  idempotencyKey     String?     @unique @db.VarChar(80)
+  packageId          String      @db.Uuid
+  voucherId          String?     @unique @db.Uuid
+  winningPaymentId   String?     @unique @db.Uuid
+  customerIdentifier String?     @db.VarChar(120)
+  amount             Int
+  status             OrderStatus @default(PENDING)
+  expiresAt          DateTime?
+  paidAt             DateTime?
+  fulfilledAt        DateTime?
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
 
-  package              Package     @relation(fields: [packageId], references: [id])
-  voucher              Voucher?    @relation(fields: [voucherId], references: [id])
-  payments             Payment[]
+  package  Package   @relation(fields: [packageId], references: [id])
+  voucher  Voucher?  @relation(fields: [voucherId], references: [id])
+  payments Payment[]
 
   @@index([status, createdAt])
   @@index([packageId, status])
@@ -121,7 +122,7 @@ model Payment {
   createdAt             DateTime      @default(now())
   paidAt                DateTime?
 
-  order                 Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId, status])
   @@index([provider, status])
@@ -129,17 +130,17 @@ model Payment {
 }
 
 model MikrotikDevice {
-  id             String    @id @default(uuid()) @db.Uuid
-  name           String    @unique @db.VarChar(100)
-  host           String    @db.VarChar(255)
-  apiPort        Int       @default(8728)
-  username       String    @db.VarChar(100)
-  passwordSecret String    @db.VarChar(255)
-  isActive       Boolean   @default(true)
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id             String   @id @default(uuid()) @db.Uuid
+  name           String   @unique @db.VarChar(100)
+  host           String   @db.VarChar(255)
+  apiPort        Int      @default(8728)
+  username       String   @db.VarChar(100)
+  passwordSecret String   @db.VarChar(255)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
-  vouchers       Voucher[]
+  vouchers Voucher[]
 
   @@map("mikrotik_devices")
 }
@@ -156,4 +157,17 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([action, createdAt])
   @@map("audit_logs")
+}
+
+model WebhookEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  provider  String   @db.VarChar(40)
+  eventId   String   @db.VarChar(160)
+  eventType String   @db.VarChar(80)
+  payload   Json?
+  createdAt DateTime @default(now())
+
+  @@unique([provider, eventId])
+  @@index([provider, createdAt])
+  @@map("webhook_events")
 }

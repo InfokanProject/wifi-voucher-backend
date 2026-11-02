@@ -130,15 +130,6 @@ export async function orderRoutes(app: FastifyInstance) {
             },
           });
 
-          await tx.payment.create({
-            data: {
-              orderId: order.id,
-              provider: "DEMO",
-              method: "MANUAL",
-              amount: pkg.price,
-            },
-          });
-
           reservedOrder = order;
           break;
         }
@@ -363,17 +354,24 @@ export async function orderRoutes(app: FastifyInstance) {
             },
           });
 
-          await tx.payment.create({
-            data: {
-              orderId: createdOrder.id,
-              provider: "CASH",
-              method: "MANUAL",
-              amount: pkg.price,
-              status: "PAID",
-              paidAt: now,
-              providerTransactionId: `CASH-${createdOrder.orderNumber}`,
-            },
-          });
+          const cashPayment = await tx.payment.create({
+  data: {
+    orderId: createdOrder.id,
+    provider: "CASH",
+    method: "MANUAL",
+    amount: pkg.price,
+    status: "PAID",
+    paidAt: now,
+    providerTransactionId: `CASH-${createdOrder.orderNumber}`,
+  },
+});
+
+await tx.order.update({
+  where: { id: createdOrder.id },
+  data: {
+    winningPaymentId: cashPayment.id,
+  },
+});
 
           reservedOrder = createdOrder;
           break;
@@ -782,49 +780,54 @@ let order = foundOrder;
                   if (isPaid) {
                     const now = new Date();
 
-                    const claimed = await prisma.$transaction(
-                      async (tx) => {
-                        const paymentUpdate = await tx.payment.updateMany({
-                          where: {
-                            id: pendingPayment.id,
-                            provider: "MIDTRANS",
-                            status: "PENDING",
-                            amount: order.amount,
-                          },
-                          data: {
-                            status: "PAID",
-                            paidAt: now,
-                            providerTransactionId: transactionId,
-                            rawResponse: midtransData,
-                          },
-                        });
+                    const claimed = await prisma.$transaction(async (tx) => {
+  // Klaim order terlebih dahulu agar hanya satu payment
+  // dari seluruh provider yang bisa menjadi pemenang.
+  const orderUpdate = await tx.order.updateMany({
+    where: {
+      id: targetOrderId,
+      status: "PENDING",
+      winningPaymentId: null,
+      OR: [
+        { expiresAt: null },
+        { expiresAt: { gt: now } },
+      ],
+    },
+    data: {
+      status: "PAID",
+      paidAt: now,
+      winningPaymentId: pendingPayment.id,
+    },
+  });
 
-                        if (paymentUpdate.count !== 1) {
-                          return false;
-                        }
+  if (orderUpdate.count !== 1) {
+    return false;
+  }
 
-                        const orderUpdate = await tx.order.updateMany({
-                          where: {
-                            id: targetOrderId,
-                            status: "PENDING",
-                          },
-                          data: {
-                            status: "PAID",
-                            paidAt: now,
-                          },
-                        });
+  // Tandai payment yang memenangkan klaim sebagai PAID.
+  const paymentUpdate = await tx.payment.updateMany({
+    where: {
+      id: pendingPayment.id,
+      orderId: targetOrderId,
+      provider: "MIDTRANS",
+      status: "PENDING",
+      amount: order.amount,
+    },
+    data: {
+      status: "PAID",
+      paidAt: now,
+      providerTransactionId: transactionId,
+      rawResponse: midtransData,
+    },
+  });
 
-                        if (orderUpdate.count !== 1) {
-                          throw new Error(
-                            "Order tidak lagi berstatus PENDING. Transaksi dibatalkan.",
-                          );
-                        }
+  if (paymentUpdate.count !== 1) {
+    throw new Error("PAYMENT_UPDATE_FAILED_AFTER_ORDER_CLAIM");
+  }
 
-                        return true;
-                      },
-                    );
-
-                    if (claimed) {
+  return true;
+});
+if (claimed) {
                       await fulfillOrder(targetOrderId);
 
                       // Ambil ulang order beserta voucher dan payment.

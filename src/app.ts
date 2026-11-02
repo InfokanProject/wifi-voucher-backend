@@ -1,9 +1,11 @@
+
 import formbody from "@fastify/formbody";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import cookie from "@fastify/cookie";
 import session from "@fastify/session";
+import rawBody from "fastify-raw-body";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -38,8 +40,14 @@ export function buildApp() {
     saveUninitialized: false
   });
 
-  
-  
+  // Raw body hanya diaktifkan pada route yang meminta config.rawBody = true.
+  app.register(rawBody, {
+    field: "rawBody",
+    global: false,
+    encoding: "utf8",
+    runFirst: true
+  });
+
   app.get("/", async (_request, reply) => {
     const html = await readFile(
       resolve(process.cwd(), "public", "index.html"),
@@ -62,7 +70,7 @@ export function buildApp() {
       .send(html);
   });
 
-    app.get("/health", async () => ({
+  app.get("/health", async () => ({
     ok: true,
     service: "wifi-voucher-backend"
   }));
