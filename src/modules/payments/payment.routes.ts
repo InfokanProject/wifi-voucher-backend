@@ -693,7 +693,8 @@ rawResponse: verifiedRawResponse as any,        },
     return reply.send({ status: "OK", message: "Notifikasi diterima." });
   });
 
-    // 3. Membuat invoice WaroengPay QRIS
+  // 3. Membuat invoice WaroengPay QRIS
+  // HTTP call ke WaroengPay dilakukan DI LUAR transaksi database.
   app.post<{
     Params: { orderId: string };
   }>("/api/payments/waroengpay/:orderId/create", async (request, reply) => {
@@ -714,63 +715,74 @@ rawResponse: verifiedRawResponse as any,        },
 
     const { orderId } = request.params;
 
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-    });
+    // Masa tenggang WaroengPay 5 menit + batas minimal expires_in 5 menit.
+    const MIN_REMAINING_MS = 10 * 60 * 1000;
+    const MIN_REUSE_MS = 2 * 60 * 1000;
 
-    if (!order) {
-      return reply.code(404).send({
-        error: "Order tidak ditemukan.",
-      });
-    }
+    type Phase1 =
+      | {
+          kind: "reuse";
+          order: { id: string; orderNumber: string };
+          invoiceId: string;
+          amount: number;
+          payUrl: string;
+          qris: unknown;
+          expiresAt: unknown;
+        }
+      | {
+          kind: "fetch";
+          order: {
+            id: string;
+            orderNumber: string;
+            amount: number;
+            package: { name: string };
+          };
+          paymentId: string;
+          expiresIn: number;
+        };
 
-    const now = new Date();
-
-    if (
-      order.status !== "PENDING" ||
-      !order.voucherId ||
-      (order.expiresAt !== null && order.expiresAt <= now)
-    ) {
-      return reply.code(409).send({
-        error: "Order tidak lagi bisa dibayar.",
-      });
-    }
-
-    if (
-      order.expiresAt &&
-      order.expiresAt.getTime() - now.getTime() < 5 * 60 * 1000
-    ) {
-      return reply.code(409).send({
-        error: "Sisa waktu order kurang dari 5 menit. Buat order baru.",
-      });
-    }
+    // FASE 1: transaksi singkat dengan lock, tanpa HTTP call.
+    let phase1: Phase1;
 
     try {
-      const result = await prisma.$transaction(
+      phase1 = await prisma.$transaction(
         async (tx) => {
           await tx.$queryRaw`
             WITH lock_result AS MATERIALIZED (
-              SELECT pg_advisory_xact_lock(hashtext(${order.id}))
+              SELECT pg_advisory_xact_lock(hashtext(${orderId}))
             )
             SELECT 1::int AS locked FROM lock_result
           `;
 
           const currentOrder = await tx.order.findUnique({
-            where: { id: order.id },
+            where: { id: orderId },
             include: { package: true },
           });
 
+          if (!currentOrder) {
+            throw new Error("ORDER_NOT_FOUND");
+          }
+
+          const now = new Date();
+
           if (
-            !currentOrder ||
             currentOrder.status !== "PENDING" ||
             !currentOrder.voucherId ||
             (currentOrder.expiresAt !== null &&
-              currentOrder.expiresAt <= new Date())
+              currentOrder.expiresAt <= now)
           ) {
             throw new Error("ORDER_NOT_PAYABLE");
           }
 
-            const otherGatewayPayment = await tx.payment.findFirst({
+          if (
+            currentOrder.expiresAt &&
+            currentOrder.expiresAt.getTime() - now.getTime() <
+              MIN_REMAINING_MS
+          ) {
+            throw new Error("ORDER_EXPIRING_SOON");
+          }
+
+          const otherGatewayPayment = await tx.payment.findFirst({
             where: {
               orderId: currentOrder.id,
               provider: "MIDTRANS",
@@ -792,155 +804,234 @@ rawResponse: verifiedRawResponse as any,        },
             orderBy: { createdAt: "desc" },
           });
 
-          if (
-            existing?.providerTransactionId &&
-            existing.rawResponse &&
-            typeof existing.rawResponse === "object" &&
-            !Array.isArray(existing.rawResponse)
-          ) {
-            const saved = existing.rawResponse as Record<string, unknown>;
+          let reusablePaymentId: string | null = null;
 
-            if (
-              typeof saved.pay_url === "string" &&
-              typeof saved.amount === "number"
-            ) {
-              return {
-                order: currentOrder,
-                invoiceId: existing.providerTransactionId,
-                amount: existing.amount,
-                payUrl: saved.pay_url,
-                qris: saved.qris ?? null,
-                expiresAt: saved.expires_at ?? null,
-              };
+          if (existing) {
+            if (!existing.providerTransactionId) {
+              // Belum punya invoice: pakai lagi dengan Idempotency-Key sama.
+              reusablePaymentId = existing.id;
+            } else {
+              const saved =
+                existing.rawResponse &&
+                typeof existing.rawResponse === "object" &&
+                !Array.isArray(existing.rawResponse)
+                  ? (existing.rawResponse as Record<string, unknown>)
+                  : null;
+
+              const invoiceExpiresMs =
+                saved && typeof saved.expires_at === "string"
+                  ? Date.parse(saved.expires_at)
+                  : NaN;
+
+              if (
+                saved &&
+                typeof saved.pay_url === "string" &&
+                Number.isFinite(invoiceExpiresMs) &&
+                invoiceExpiresMs - now.getTime() > MIN_REUSE_MS
+              ) {
+                return {
+                  kind: "reuse",
+                  order: {
+                    id: currentOrder.id,
+                    orderNumber: currentOrder.orderNumber,
+                  },
+                  invoiceId: existing.providerTransactionId,
+                  amount: existing.amount,
+                  payUrl: saved.pay_url,
+                  qris: saved.qris ?? null,
+                  expiresAt: saved.expires_at ?? null,
+                } as Phase1;
+              }
+
+              // Invoice hampir/sudah kedaluwarsa: tutup secara lokal.
+              // Jika masih dibayar di masa tenggang, webhook tetap bisa
+              // memproses karena klaim pemenang tidak bergantung status ini.
+              await tx.payment.updateMany({
+                where: { id: existing.id, status: "PENDING" },
+                data: { status: "EXPIRED" },
+              });
             }
           }
 
-          const remainingMinutes = currentOrder.expiresAt
-            ? Math.floor(
-                (currentOrder.expiresAt.getTime() - Date.now()) / 60000,
+          const paymentId =
+            reusablePaymentId ??
+            (
+              await tx.payment.create({
+                data: {
+                  orderId: currentOrder.id,
+                  provider: "WAROENGPAY",
+                  method: "QRIS",
+                  amount: currentOrder.amount,
+                  status: "PENDING",
+                },
+              })
+            ).id;
+
+          const expiresIn = currentOrder.expiresAt
+            ? Math.min(
+                60,
+                Math.floor(
+                  (currentOrder.expiresAt.getTime() - now.getTime()) / 60000,
+                ) - 5,
               )
             : 60;
 
-          if (remainingMinutes < 5) {
-            throw new Error("ORDER_EXPIRING_SOON");
-          }
-
-          const expiresIn = Math.min(60, remainingMinutes);
-
-          const payment =
-            existing ??
-            (await tx.payment.create({
-              data: {
-                orderId: currentOrder.id,
-                provider: "WAROENGPAY",
-                method: "QRIS",
-                amount: currentOrder.amount,
-                status: "PENDING",
-              },
-            }));
-
-          const response = await fetch(
-            "https://waroengpay.com/api/payments",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${env.WAROENGPAY_API_KEY}`,
-                "Content-Type": "application/json",
-                Accept: "application/json",
-                "Idempotency-Key": currentOrder.orderNumber,
-              },
-              body: JSON.stringify({
-                amount: currentOrder.amount,
-                description: `Voucher WiFi ${currentOrder.package.name}`,
-                callback_url: `${env.PUBLIC_APP_URL}/api/payments/waroengpay/webhook`,
-                redirect_url: `${env.PUBLIC_APP_URL}/beli`,
-                expires_in: expiresIn,
-              }),
-              signal: AbortSignal.timeout(15000),
-            },
-          );
-
-          const invoice = (await response.json()) as Record<string, unknown>;
-
-          if (
-            !response.ok ||
-            typeof invoice.id !== "string" ||
-            typeof invoice.base_amount !== "number" ||
-            typeof invoice.amount !== "number" ||
-            typeof invoice.pay_url !== "string" ||
-            invoice.base_amount !== currentOrder.amount ||
-            !Number.isInteger(invoice.amount) ||
-            invoice.amount < invoice.base_amount ||
-            invoice.livemode !== false
-          ) {
-            request.log.error(
-              {
-                orderNumber: currentOrder.orderNumber,
-                httpStatus: response.status,
-                response: invoice,
-              },
-              "WaroengPay menolak pembuatan invoice atau respons tidak valid.",
-            );
-
-            throw new Error("WAROENGPAY_INVOICE_CREATION_FAILED");
-          }
-
-          const savedInvoice = {
-            ...invoice,
-          };
-
-          await tx.payment.update({
-            where: { id: payment.id },
-            data: {
-              amount: invoice.amount,
-              providerTransactionId: invoice.id,
-              rawResponse: savedInvoice as any,
-            },
-          });
-
           return {
-            order: currentOrder,
-            invoiceId: invoice.id,
-            amount: invoice.amount,
-            payUrl: invoice.pay_url,
-            qris: invoice.qris ?? null,
-            expiresAt: invoice.expires_at ?? null,
-          };
+            kind: "fetch",
+            order: {
+              id: currentOrder.id,
+              orderNumber: currentOrder.orderNumber,
+              amount: currentOrder.amount,
+              package: { name: currentOrder.package.name },
+            },
+            paymentId,
+            expiresIn,
+          } as Phase1;
         },
-        {
-          maxWait: 10000,
-          timeout: 30000,
-        },
+        { maxWait: 10000, timeout: 15000 },
       );
+    } catch (err) {
+      return handleWaroengPayCreateError(err);
+    }
 
+    if (phase1.kind === "reuse") {
       return reply.send({
         ok: true,
-        orderId: result.order.id,
-        orderNumber: result.order.orderNumber,
-        invoiceId: result.invoiceId,
-        amount: result.amount,
-        payUrl: result.payUrl,
-        qris: result.qris,
-        expiresAt: result.expiresAt,
+        orderId: phase1.order.id,
+        orderNumber: phase1.order.orderNumber,
+        invoiceId: phase1.invoiceId,
+        amount: phase1.amount,
+        payUrl: phase1.payUrl,
+        qris: phase1.qris,
+        expiresAt: phase1.expiresAt,
       });
-        } catch (err) {
-      request.log.error(
-        { err, orderId },
-        "Gagal membuat invoice WaroengPay.",
-      );
+    }
+
+    // FASE 2: panggil WaroengPay di luar transaksi.
+    let invoice: Record<string, unknown>;
+
+    try {
+      const response = await fetch("https://waroengpay.com/api/payments", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.WAROENGPAY_API_KEY}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          "Idempotency-Key": `${phase1.order.orderNumber}:${phase1.paymentId}`,
+        },
+        body: JSON.stringify({
+          amount: phase1.order.amount,
+          reference: phase1.order.orderNumber,
+          description: `Voucher WiFi ${phase1.order.package.name}`,
+          callback_url: `${env.PUBLIC_APP_URL}/api/payments/waroengpay/webhook`,
+          redirect_url: `${env.PUBLIC_APP_URL}/beli`,
+          expires_in: phase1.expiresIn,
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      invoice = (await response.json()) as Record<string, unknown>;
 
       if (
-        err instanceof Error &&
-        (err.message === "ORDER_NOT_PAYABLE" ||
-          err.message === "ORDER_EXPIRING_SOON" ||
-          err.message === "OTHER_GATEWAY_PAYMENT_PENDING")
+        !response.ok ||
+        typeof invoice.id !== "string" ||
+        typeof invoice.base_amount !== "number" ||
+        typeof invoice.amount !== "number" ||
+        typeof invoice.pay_url !== "string" ||
+        invoice.base_amount !== phase1.order.amount ||
+        !Number.isInteger(invoice.amount) ||
+        invoice.amount < invoice.base_amount ||
+        invoice.livemode !== false
       ) {
-        return reply.code(409).send({
-          error:
-            err.message === "OTHER_GATEWAY_PAYMENT_PENDING"
-              ? "Order sudah memiliki invoice aktif dari gateway lain."
-              : "Order tidak lagi bisa dibayar.",
+        request.log.error(
+          {
+            orderNumber: phase1.order.orderNumber,
+            httpStatus: response.status,
+            response: invoice,
+          },
+          "WaroengPay menolak pembuatan invoice atau respons tidak valid.",
+        );
+
+        return reply.code(502).send({
+          error: "Gagal membuat invoice WaroengPay.",
         });
+      }
+    } catch (err) {
+      request.log.error(
+        { err, orderId },
+        "Request pembuatan invoice WaroengPay gagal.",
+      );
+
+      return reply.code(502).send({
+        error: "Gagal membuat invoice WaroengPay.",
+      });
+    }
+
+    // FASE 3: simpan hasil invoice dalam update singkat.
+    try {
+      const saved = await prisma.payment.updateMany({
+        where: { id: phase1.paymentId, status: "PENDING" },
+        data: {
+          amount: invoice.amount as number,
+          providerTransactionId: invoice.id as string,
+          rawResponse: invoice as any,
+        },
+      });
+
+      if (saved.count !== 1) {
+        request.log.error(
+          { orderId, paymentId: phase1.paymentId },
+          "Payment tidak lagi PENDING saat menyimpan invoice WaroengPay.",
+        );
+
+        return reply.code(409).send({
+          error: "Order tidak lagi bisa dibayar.",
+        });
+      }
+    } catch (err) {
+      request.log.error(
+        { err, orderId, invoiceId: invoice.id },
+        "Gagal menyimpan invoice WaroengPay. Retry akan memakai Idempotency-Key yang sama.",
+      );
+
+      return reply.code(502).send({
+        error: "Gagal menyimpan invoice. Silakan coba lagi.",
+      });
+    }
+
+    return reply.send({
+      ok: true,
+      orderId: phase1.order.id,
+      orderNumber: phase1.order.orderNumber,
+      invoiceId: invoice.id,
+      amount: invoice.amount,
+      payUrl: invoice.pay_url,
+      qris: invoice.qris ?? null,
+      expiresAt: invoice.expires_at ?? null,
+    });
+
+    function handleWaroengPayCreateError(err: unknown) {
+      request.log.error({ err, orderId }, "Gagal membuat invoice WaroengPay.");
+
+      if (err instanceof Error) {
+        if (err.message === "ORDER_NOT_FOUND") {
+          return reply.code(404).send({ error: "Order tidak ditemukan." });
+        }
+
+        if (
+          err.message === "ORDER_NOT_PAYABLE" ||
+          err.message === "ORDER_EXPIRING_SOON"
+        ) {
+          return reply.code(409).send({
+            error: "Order tidak lagi bisa dibayar. Buat order baru.",
+          });
+        }
+
+        if (err.message === "OTHER_GATEWAY_PAYMENT_PENDING") {
+          return reply.code(409).send({
+            error: "Order sudah memiliki invoice aktif dari gateway lain.",
+          });
+        }
       }
 
       return reply.code(502).send({
