@@ -39,6 +39,10 @@ export const env = {
 
   WAROENGPAY_API_KEY: process.env.WAROENGPAY_API_KEY ?? "",
   WAROENGPAY_WEBHOOK_SECRET: process.env.WAROENGPAY_WEBHOOK_SECRET ?? "",
+  ACTIVE_PAYMENT_GATEWAY:
+    (process.env.ACTIVE_PAYMENT_GATEWAY ?? "midtrans").trim().toLowerCase() === "waroengpay"
+      ? ("waroengpay" as const)
+      : ("midtrans" as const),
 
   ADMIN_PASSWORD: process.env.ADMIN_PASSWORD ?? "",
   SESSION_SECRET: process.env.SESSION_SECRET ?? "",

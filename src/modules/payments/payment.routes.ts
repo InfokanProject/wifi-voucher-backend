@@ -17,6 +17,11 @@ function getSnapUrl(): string {
 }
 
 export async function paymentRoutes(app: FastifyInstance) {
+  // Gateway yang dipakai frontend. Hanya mengembalikan nama, tanpa data lain.
+  app.get("/api/payments/active-gateway", async () => ({
+    gateway: env.ACTIVE_PAYMENT_GATEWAY,
+  }));
+
   // 1. Membuat transaksi Midtrans Snap
   // HTTP call ke Midtrans dilakukan DI LUAR transaksi database.
   app.post<{
