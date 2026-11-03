@@ -276,8 +276,8 @@
         <p id="voucherStatusText" aria-live="polite" style="margin-top: 0.5rem;"></p>
       </div>
 
-      <button id="continueMidtrans" class="submit hidden" type="button">
-        Bayar QRIS Sekarang (Midtrans)
+      <button id="continuePay" class="submit hidden" type="button">
+        Bayar QRIS Sekarang
       </button>
 
       <button id="refreshOrderButton" class="submit" type="button" style="background: #475569; margin-top: 0.5rem;">
@@ -316,7 +316,8 @@
     const voucherCodeText = document.getElementById("voucherCodeText");
     const voucherStatusText = document.getElementById("voucherStatusText");
     const copyVoucherButton = document.getElementById("copyVoucherButton");
-    const continueMidtransButton = document.getElementById("continueMidtrans");
+    const continueMidtransButton = document.getElementById("continuePay");
+    let activeGateway = "midtrans";
     const refreshOrderButton = document.getElementById("refreshOrderButton");
     const newOrderButton = document.getElementById("newOrderButton");
     const pendingHint = document.getElementById("pendingHint");
@@ -463,7 +464,7 @@
       if (status === "PENDING") {
         buyForm.classList.add("hidden");
         paymentDetails.textContent =
-          "Pesanan menunggu pembayaran. Isikan email jika belum, lalu klik tombol di bawah untuk membuka QRIS Midtrans.";
+          "Pesanan menunggu pembayaran. Isikan email jika belum, lalu klik tombol di bawah untuk membuka pembayaran QRIS.";
 
         // Tampilkan kolom email jika belum terisi
         pendingEmailSection.classList.remove("hidden");
@@ -479,6 +480,7 @@
       }
 
       if (status === "FULFILLED") {
+        clearMessage();
         buyForm.classList.add("hidden");
         pendingHint.classList.add("hidden");
         refreshOrderButton.classList.add("hidden");
@@ -559,7 +561,7 @@
       const orderId = currentOrder.orderId || currentOrder.id || currentOrder.orderNumber;
 
       continueMidtransButton.disabled = true;
-      continueMidtransButton.textContent = "Menyiapkan QRIS Midtrans...";
+      continueMidtransButton.textContent = "Menyiapkan QRIS...";
       clearMessage();
 
       try {
@@ -594,10 +596,77 @@
         showMessage(error instanceof Error ? error.message : "Gagal membuka QRIS.");
       } finally {
         continueMidtransButton.disabled = false;
-        continueMidtransButton.textContent = "Bayar QRIS Sekarang (Midtrans)";
+        continueMidtransButton.textContent = "Bayar QRIS Sekarang";
       }
     }
 
+    async function loadActiveGateway() {
+      try {
+        const response = await fetch("/api/payments/active-gateway");
+        const data = await response.json();
+        activeGateway = data.gateway === "waroengpay" ? "waroengpay" : "midtrans";
+      } catch (error) {
+        activeGateway = "midtrans";
+      }
+    }
+
+    function startPayment() {
+      if (activeGateway === "waroengpay") {
+        return createWaroengPayInvoice();
+      }
+      return createMidtransTransaction();
+    }
+
+    async function createWaroengPayInvoice() {
+      if (!currentOrder) {
+        showMessage("Data pesanan tidak ditemukan.");
+        return;
+      }
+
+      const orderId = currentOrder.orderId || currentOrder.id || currentOrder.orderNumber;
+
+      // Buka tab saat klik agar tidak diblokir browser; alamat diisi setelah invoice jadi.
+      const payTab = window.open("", "_blank");
+
+      continueMidtransButton.disabled = true;
+      continueMidtransButton.textContent = "Menyiapkan QRIS...";
+      clearMessage();
+
+      try {
+        const response = await fetch(
+          `/api/payments/waroengpay/${encodeURIComponent(orderId)}/create`,
+          { method: "POST" }
+        );
+
+        const data = await response.json().catch(() => ({}));
+
+        if (!response.ok) {
+          throw new Error(data.message || data.error || "Gagal menyiapkan pembayaran.");
+        }
+
+        if (typeof data.payUrl !== "string" || !data.payUrl.startsWith("https://")) {
+          throw new Error("Alamat pembayaran tidak valid.");
+        }
+
+        showMessage(
+          "Bayar tepat " + formatRupiah(Number(data.amount)) +
+          " (sudah termasuk kode unik). Status akan diperbarui otomatis setelah pembayaran."
+        );
+
+        if (payTab) {
+          payTab.location.href = data.payUrl;
+        } else {
+          window.location.assign(data.payUrl);
+        }
+      } catch (error) {
+        if (payTab) payTab.close();
+        showMessage(error instanceof Error ? error.message : "Gagal membuka pembayaran.");
+      } finally {
+        continueMidtransButton.disabled = false;
+        continueMidtransButton.textContent = "Bayar QRIS Sekarang";
+        refreshOrderStatus();
+      }
+    }
     async function loadPackages() {
       try {
         const response = await fetch("/api/packages");
@@ -659,7 +728,7 @@
     }
 
     createButton.addEventListener("click", handleCreateOrder);
-    continueMidtransButton.addEventListener("click", createMidtransTransaction);
+    continueMidtransButton.addEventListener("click", startPayment);
     refreshOrderButton.addEventListener("click", refreshOrderStatus);
 
     newOrderButton.addEventListener("click", () => {
@@ -684,6 +753,7 @@
       }
     });
 
+    loadActiveGateway();
     loadPackages();
 
     const savedOrder = getOrderFromStorage();
