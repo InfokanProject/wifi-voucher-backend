@@ -18,6 +18,7 @@ function getSnapUrl(): string {
 
 export async function paymentRoutes(app: FastifyInstance) {
   // 1. Membuat transaksi Midtrans Snap
+  // HTTP call ke Midtrans dilakukan DI LUAR transaksi database.
   app.post<{
     Params: { orderId: string };
     Body: { email?: string };
@@ -42,206 +43,287 @@ export async function paymentRoutes(app: FastifyInstance) {
       });
     }
 
-    const order = await prisma.order.findUnique({
-      where: { id: request.params.orderId },
-      include: {
-        package: true,
-        payments: true,
-      },
-    });
+    const { orderId } = request.params;
 
-    if (!order) {
-      return reply.code(404).send({
-        error: "Order tidak ditemukan.",
-      });
-    }
+    type MidtransPhase1 =
+      | {
+          kind: "reuse";
+          order: { id: string; orderNumber: string; amount: number };
+          redirectUrl: string;
+          token: string | null;
+        }
+      | {
+          kind: "fetch";
+          order: {
+            id: string;
+            orderNumber: string;
+            amount: number;
+            customerIdentifier: string | null;
+            package: { code: string; name: string };
+          };
+          paymentId: string;
+        };
 
-    const now = new Date();
+    // FASE 1: transaksi singkat dengan lock, tanpa HTTP call.
+    let phase1: MidtransPhase1;
 
-    if (
-      order.status !== "PENDING" ||
-      !order.voucherId ||
-      (order.expiresAt !== null && order.expiresAt <= now)
-    ) {
-      return reply.code(409).send({
-        error: "Order tidak lagi bisa dibayar.",
-      });
-    }
+    try {
+      phase1 = await prisma.$transaction(
+        async (tx) => {
+          await tx.$queryRaw`
+            WITH lock_result AS MATERIALIZED (
+              SELECT pg_advisory_xact_lock(hashtext(${orderId}))
+            )
+            SELECT 1::int AS locked FROM lock_result
+          `;
 
-            const client = await prisma.$transaction(
-      async (tx) => {
-        await tx.$queryRaw`
-          WITH lock_result AS MATERIALIZED (
-            SELECT pg_advisory_xact_lock(hashtext(${order.id}))
-          )
-          SELECT 1::int AS locked FROM lock_result
-        `;
           const currentOrder = await tx.order.findUnique({
-          where: { id: order.id },
-          include: { package: true },
-        });
+            where: { id: orderId },
+            include: { package: true },
+          });
 
-        if (
-          !currentOrder ||
-          currentOrder.status !== "PENDING" ||
-          !currentOrder.voucherId ||
-          (currentOrder.expiresAt !== null &&
-            currentOrder.expiresAt <= new Date())
-        ) {
-          throw new Error("ORDER_NOT_PAYABLE");
-        }
-
-          const otherGatewayPayment = await tx.payment.findFirst({
-          where: {
-            orderId: currentOrder.id,
-            provider: "WAROENGPAY",
-            status: "PENDING",
-          },
-          select: { id: true },
-        });
-
-        if (otherGatewayPayment) {
-          return { conflict: true as const };
-        }
-
-        const existing = await tx.payment.findFirst({
-          where: {
-            orderId: currentOrder.id,
-            provider: "MIDTRANS",
-            status: "PENDING",
-          },
-          orderBy: { createdAt: "desc" },
-        });
-
-        if (existing) {
-          const saved = existing.rawResponse;
-
-          if (
-            saved &&
-            typeof saved === "object" &&
-            !Array.isArray(saved) &&
-            typeof (saved as Record<string, unknown>).redirectUrl === "string"
-          ) {
-            return {
-              existing: true,
-              order: currentOrder,
-              payment: existing,
-              redirectUrl: (saved as Record<string, unknown>).redirectUrl as string,
-              token:
-                typeof (saved as Record<string, unknown>).token === "string"
-                  ? (saved as Record<string, unknown>).token as string
-                  : null,
-            };
+          if (!currentOrder) {
+            throw new Error("ORDER_NOT_FOUND");
           }
 
-          throw new Error("MIDTRANS_PAYMENT_ALREADY_EXISTS");
-        }
+          if (
+            currentOrder.status !== "PENDING" ||
+            !currentOrder.voucherId ||
+            (currentOrder.expiresAt !== null &&
+              currentOrder.expiresAt <= new Date())
+          ) {
+            throw new Error("ORDER_NOT_PAYABLE");
+          }
 
-        const payment = await tx.payment.create({
-          data: {
-            orderId: currentOrder.id,
-            provider: "MIDTRANS",
-            method: "QRIS",
-            amount: currentOrder.amount,
-            status: "PENDING",
-          },
-        });
-
-        const authHeader = `Basic ${Buffer.from(
-          env.MIDTRANS_SERVER_KEY + ":",
-        ).toString("base64")}`;
-
-        const response = await fetch(getSnapUrl(), {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-            Authorization: authHeader,
-            "X-Override-Notification": `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,
-          },
-          body: JSON.stringify({
-            transaction_details: {
-              order_id: currentOrder.orderNumber,
-              gross_amount: currentOrder.amount,
+          const otherGatewayPayment = await tx.payment.findFirst({
+            where: {
+              orderId: currentOrder.id,
+              provider: "WAROENGPAY",
+              status: "PENDING",
             },
-            callbacks: {
-              finish: `${env.PUBLIC_APP_URL}/beli`,
-            },
-            item_details: [
-              {
-                id: currentOrder.package.code,
-                price: currentOrder.amount,
-                quantity: 1,
-                name: `Voucher WiFi ${currentOrder.package.name}`,
-              },
-            ],
-            customer_details: {
-              email,
-              phone: currentOrder.customerIdentifier || "",
-            },
-          }),
-          signal: AbortSignal.timeout(15000),
-        });
+            select: { id: true },
+          });
 
-        const result = (await response.json()) as {
-          token?: string;
-          redirect_url?: string;
-          error_messages?: string[];
-        };
+          if (otherGatewayPayment) {
+            throw new Error("OTHER_GATEWAY_PAYMENT_PENDING");
+          }
 
-        if (
-          !response.ok ||
-          typeof result.token !== "string" ||
-          typeof result.redirect_url !== "string"
-        ) {
-          request.log.warn(
-            {
+          const existing = await tx.payment.findFirst({
+            where: {
+              orderId: currentOrder.id,
+              provider: "MIDTRANS",
+              status: "PENDING",
+            },
+            orderBy: { createdAt: "desc" },
+          });
+
+          if (existing) {
+            const saved =
+              existing.rawResponse &&
+              typeof existing.rawResponse === "object" &&
+              !Array.isArray(existing.rawResponse)
+                ? (existing.rawResponse as Record<string, unknown>)
+                : null;
+
+            if (saved && typeof saved.redirectUrl === "string") {
+              return {
+                kind: "reuse",
+                order: {
+                  id: currentOrder.id,
+                  orderNumber: currentOrder.orderNumber,
+                  amount: currentOrder.amount,
+                },
+                redirectUrl: saved.redirectUrl,
+                token: typeof saved.token === "string" ? saved.token : null,
+              } as MidtransPhase1;
+            }
+          }
+
+          const paymentId =
+            existing?.id ??
+            (
+              await tx.payment.create({
+                data: {
+                  orderId: currentOrder.id,
+                  provider: "MIDTRANS",
+                  method: "QRIS",
+                  amount: currentOrder.amount,
+                  status: "PENDING",
+                },
+              })
+            ).id;
+
+          return {
+            kind: "fetch",
+            order: {
+              id: currentOrder.id,
               orderNumber: currentOrder.orderNumber,
-              httpStatus: response.status,
-              errors: result.error_messages,
+              amount: currentOrder.amount,
+              customerIdentifier: currentOrder.customerIdentifier,
+              package: {
+                code: currentOrder.package.code,
+                name: currentOrder.package.name,
+              },
             },
-            "Midtrans menolak pembuatan transaksi Snap",
-          );
+            paymentId,
+          } as MidtransPhase1;
+        },
+        { maxWait: 10000, timeout: 15000 },
+      );
+    } catch (err) {
+      request.log.error({ err, orderId }, "Gagal menyiapkan pembayaran Midtrans.");
 
-          throw new Error("MIDTRANS_SNAP_CREATION_FAILED");
+      if (err instanceof Error) {
+        if (err.message === "ORDER_NOT_FOUND") {
+          return reply.code(404).send({ error: "Order tidak ditemukan." });
         }
 
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: {
-            rawResponse: {
-              token: result.token,
-              redirectUrl: result.redirect_url,
-            },
+        if (err.message === "ORDER_NOT_PAYABLE") {
+          return reply.code(409).send({
+            error: "Order tidak lagi bisa dibayar.",
+          });
+        }
+
+        if (err.message === "OTHER_GATEWAY_PAYMENT_PENDING") {
+          return reply.code(409).send({
+            error: "Order sudah memiliki invoice aktif dari gateway lain.",
+          });
+        }
+      }
+
+      return reply.code(502).send({
+        error: "Gagal membuat transaksi Midtrans.",
+      });
+    }
+
+    if (phase1.kind === "reuse") {
+      return reply.send({
+        orderId: phase1.order.id,
+        orderNumber: phase1.order.orderNumber,
+        amount: phase1.order.amount,
+        redirectUrl: phase1.redirectUrl,
+        token: phase1.token,
+      });
+    }
+
+    // FASE 2: panggil Midtrans Snap di luar transaksi.
+    let snapToken: string;
+    let snapRedirectUrl: string;
+
+    try {
+      const authHeader = `Basic ${Buffer.from(
+        env.MIDTRANS_SERVER_KEY + ":",
+      ).toString("base64")}`;
+
+      const response = await fetch(getSnapUrl(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: authHeader,
+          "X-Override-Notification": `${env.PUBLIC_APP_URL}/api/payments/midtrans/notification`,
+        },
+        body: JSON.stringify({
+          transaction_details: {
+            order_id: phase1.order.orderNumber,
+            gross_amount: phase1.order.amount,
           },
+          callbacks: {
+            finish: `${env.PUBLIC_APP_URL}/beli`,
+          },
+          item_details: [
+            {
+              id: phase1.order.package.code,
+              price: phase1.order.amount,
+              quantity: 1,
+              name: `Voucher WiFi ${phase1.order.package.name}`,
+            },
+          ],
+          customer_details: {
+            email,
+            phone: phase1.order.customerIdentifier || "",
+          },
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+
+      const result = (await response.json()) as {
+        token?: string;
+        redirect_url?: string;
+        error_messages?: string[];
+      };
+
+      if (
+        !response.ok ||
+        typeof result.token !== "string" ||
+        typeof result.redirect_url !== "string"
+      ) {
+        request.log.warn(
+          {
+            orderNumber: phase1.order.orderNumber,
+            httpStatus: response.status,
+            errors: result.error_messages,
+          },
+          "Midtrans menolak pembuatan transaksi Snap",
+        );
+
+        return reply.code(502).send({
+          error: "Gagal membuat transaksi Midtrans.",
         });
+      }
 
-        return {
-          existing: false,
-          order: currentOrder,
-          payment,
-          redirectUrl: result.redirect_url,
-          token: result.token,
-        };
-      },
-      {
-        maxWait: 10000,
-        timeout: 30000,
-      },
-    );
+      snapToken = result.token;
+      snapRedirectUrl = result.redirect_url;
+    } catch (err) {
+      request.log.error(
+        { err, orderId },
+        "Request pembuatan transaksi Snap Midtrans gagal.",
+      );
 
-        if ("conflict" in client) {
-      return reply.code(409).send({
-        error: "Order sudah memiliki invoice aktif dari gateway lain.",
+      return reply.code(502).send({
+        error: "Gagal membuat transaksi Midtrans.",
+      });
+    }
+
+    // FASE 3: simpan token dan redirectUrl dalam update singkat.
+    try {
+      const saved = await prisma.payment.updateMany({
+        where: { id: phase1.paymentId, status: "PENDING" },
+        data: {
+          rawResponse: {
+            token: snapToken,
+            redirectUrl: snapRedirectUrl,
+          },
+        },
+      });
+
+      if (saved.count !== 1) {
+        request.log.error(
+          { orderId, paymentId: phase1.paymentId },
+          "Payment tidak lagi PENDING saat menyimpan transaksi Snap.",
+        );
+
+        return reply.code(409).send({
+          error: "Order tidak lagi bisa dibayar.",
+        });
+      }
+    } catch (err) {
+      request.log.error(
+        { err, orderId },
+        "Gagal menyimpan transaksi Snap Midtrans.",
+      );
+
+      return reply.code(502).send({
+        error: "Gagal menyimpan transaksi. Silakan coba lagi.",
       });
     }
 
     return reply.send({
-      orderId: client.order.id,
-      orderNumber: client.order.orderNumber,
-      amount: client.order.amount,
-      redirectUrl: client.redirectUrl,
-      token: client.token,
+      orderId: phase1.order.id,
+      orderNumber: phase1.order.orderNumber,
+      amount: phase1.order.amount,
+      redirectUrl: snapRedirectUrl,
+      token: snapToken,
     });
   });
 
