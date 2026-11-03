@@ -30,6 +30,10 @@ export const env = {
   MIKROTIK_MODE: mikrotikMode as "real" | "simulator",
   MIKROTIK_HOST: process.env.MIKROTIK_HOST ?? "",
   MIKROTIK_PORT: Number(process.env.MIKROTIK_PORT ?? 8728),
+  MIKROTIK_TIMEOUT_SECONDS: (() => {
+    const v = Number(process.env.MIKROTIK_TIMEOUT_SECONDS ?? 8);
+    return Number.isFinite(v) && v >= 3 && v <= 30 ? v : 8;
+  })(),
   MIKROTIK_USERNAME: process.env.MIKROTIK_USERNAME ?? "",
   MIKROTIK_PASSWORD: process.env.MIKROTIK_PASSWORD ?? "",
 
