@@ -388,6 +388,7 @@ try {
   ).toString("base64")}`;
 
   const statusResponse = await fetch(statusUrl, {
+    signal: AbortSignal.timeout(10000),
     method: "GET",
     headers: {
       Accept: "application/json",
