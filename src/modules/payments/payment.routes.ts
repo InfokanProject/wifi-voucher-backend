@@ -1278,6 +1278,41 @@ rawResponse: verifiedRawResponse as any,        },
         });
       }
 
+      const recordWebhookAnomaly = async (
+        action: string,
+        entityType: string,
+        entityId: string,
+        description: string,
+        metadata: Record<string, unknown>,
+      ) => {
+        if (body.event !== "payment.paid") return;
+        try {
+          const existing = await prisma.auditLog.findFirst({
+            where: {
+              action,
+              entityType,
+              entityId,
+              metadata: { path: ["eventId"], equals: eventId },
+            },
+            select: { id: true },
+          });
+          if (existing) return;
+          await prisma.auditLog.create({
+            data: {
+              action,
+              entityType,
+              entityId,
+              description,
+              metadata: { eventId, ...metadata } as any,
+            },
+          });
+        } catch (auditError) {
+          request.log.error(
+            { err: auditError, eventId },
+            "Gagal mencatat audit log anomali webhook.",
+          );
+        }
+      };
       // Cari berdasarkan ID invoice WaroengPay, bukan reference.
       const payment = await prisma.payment.findFirst({
         where: {
@@ -1293,6 +1328,13 @@ rawResponse: verifiedRawResponse as any,        },
         request.log.warn(
           { invoiceId: data.id, eventId },
           "Invoice WaroengPay tidak ditemukan di database.",
+        );
+        await recordWebhookAnomaly(
+          "WEBHOOK_INVOICE_NOT_FOUND",
+          "Webhook",
+          data.id,
+          `Webhook WaroengPay untuk invoice ${data.id} tidak punya payment lokal.`,
+          { amount: data.amount, baseAmount: data.base_amount, reference: data.reference ?? null }
         );
 
         return reply.send({
@@ -1315,6 +1357,13 @@ rawResponse: verifiedRawResponse as any,        },
             paymentAmount: payment.amount,
           },
           "Nominal invoice WaroengPay tidak cocok.",
+        );
+        await recordWebhookAnomaly(
+          "WEBHOOK_AMOUNT_MISMATCH",
+          "Order",
+          payment.orderId,
+          `Nominal webhook WaroengPay tidak cocok untuk invoice ${data.id}.`,
+          { invoiceId: data.id, baseAmount: data.base_amount, orderAmount: payment.order.amount, invoiceAmount: data.amount, paymentAmount: payment.amount }
         );
 
         return reply.code(400).send({
