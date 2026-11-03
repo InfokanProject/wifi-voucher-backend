@@ -23,6 +23,7 @@ function createMikrotikClient() {
     user: env.MIKROTIK_USERNAME,
     password: env.MIKROTIK_PASSWORD,
     port: env.MIKROTIK_PORT,
+    timeout: env.MIKROTIK_TIMEOUT_SECONDS,
   });
 }
 

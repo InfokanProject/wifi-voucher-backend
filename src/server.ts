@@ -4,12 +4,15 @@ import { env } from "./config/env";
 import { syncAllVoucherActivations } from "./services/activation-sync.service";
 import { expireDueVouchers } from "./services/voucher-expiration.service";
 import { expireDueOrders } from "./services/order-expiration.service";
+import { recoverStuckOrders } from "./services/order-recovery.service";
 
 const app = buildApp();
 
 const ACTIVATION_SYNC_INTERVAL = 30_000;
 const VOUCHER_EXPIRATION_INTERVAL = 30_000;
 const ORDER_EXPIRATION_INTERVAL = 30_000;
+const ORDER_RECOVERY_INTERVAL = 60_000;
+let orderRecoveryRunning = false;
 
 let activationSyncRunning = false;
 
@@ -83,6 +86,35 @@ async function runOrderExpiration() {
   }
 }
 
+async function runOrderRecovery() {
+  if (orderRecoveryRunning) {
+    app.log.warn("Order recovery dilewati: proses sebelumnya masih berjalan");
+    return;
+  }
+
+  orderRecoveryRunning = true;
+
+  try {
+    const result = await recoverStuckOrders();
+
+    if (result.found > 0) {
+      app.log.info(
+        {
+          found: result.found,
+          recovered: result.recovered,
+          skipped: result.skipped,
+          failed: result.failed,
+        },
+        "Order recovery selesai"
+      );
+    }
+  } catch (error) {
+    app.log.error(error, "Order recovery gagal");
+  } finally {
+    orderRecoveryRunning = false;
+  }
+}
+
 app.listen({ host: env.HOST, port: env.PORT })
   .then(async () => {
     console.log(
@@ -93,11 +125,13 @@ app.listen({ host: env.HOST, port: env.PORT })
       runActivationSync(),
       runVoucherExpiration(),
       runOrderExpiration(),
+      runOrderRecovery(),
     ]);
 
     setInterval(runActivationSync, ACTIVATION_SYNC_INTERVAL);
     setInterval(runVoucherExpiration, VOUCHER_EXPIRATION_INTERVAL);
     setInterval(runOrderExpiration, ORDER_EXPIRATION_INTERVAL);
+    setInterval(runOrderRecovery, ORDER_RECOVERY_INTERVAL);
   })
   .catch(async (error) => {
     app.log.error(error);

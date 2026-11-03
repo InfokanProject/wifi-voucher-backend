@@ -686,7 +686,13 @@ const targetOrderId = foundOrder.id;
 let order = foundOrder;
 
       // FALLBACK AUTO-CHECK: Verifikasi status melalui Midtrans Status API.
-      if (order.status === "PENDING" && env.MIDTRANS_SERVER_KEY) {
+      if (
+        order.status === "PENDING" &&
+        env.MIDTRANS_SERVER_KEY &&
+        order.payments.some(
+          (p) => p.provider === "MIDTRANS" && p.status === "PENDING",
+        )
+      ) {
         try {
           const authHeader = `Basic ${Buffer.from(
             env.MIDTRANS_SERVER_KEY + ":",
@@ -700,6 +706,7 @@ let order = foundOrder;
             `${statusBaseUrl}/v2/${encodeURIComponent(order.orderNumber)}/status`;
 
           const res = await fetch(midtransStatusUrl, {
+            signal: AbortSignal.timeout(10000),
             method: "GET",
             headers: {
               Accept: "application/json",
