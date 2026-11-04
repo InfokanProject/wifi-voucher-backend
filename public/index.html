@@ -345,6 +345,7 @@
         <button data-view="vouchers" type="button">Voucher</button>
         <button data-view="orders" type="button">Order</button>
         <button data-view="packages" type="button">Paket / Generate</button>
+        <button data-view="reconciliation" type="button">Rekonsiliasi</button>
       </div>
 
       <section id="view-overview" class="section">
@@ -512,6 +513,17 @@
         </div>
       </section>
 
+            <section id="view-reconciliation" class="section panel hidden">
+        <div class="toolbar">
+          <div>
+            <h2>Rekonsiliasi pembayaran</h2>
+            <p class="muted small">Anomali pembayaran dan pemulihan (maks 100 terbaru). Refund dilakukan manual di dashboard gateway.</p>
+          </div>
+          <button id="refreshReconButton" class="secondary" type="button">Muat ulang</button>
+        </div>
+        <div id="reconMessage" aria-live="polite"></div>
+        <div id="reconList"></div>
+      </section>
       <section id="view-packages" class="section hidden">
         <div class="panel">
           <div class="toolbar">
@@ -876,6 +888,24 @@ function renderOrderRow(order, compact = false) {
       }
     }
 
+    async function loadReconciliation() {
+      const result = await api("/api/admin/reconciliation");
+      const box = $("reconList");
+      if (!result.logs.length) {
+        box.innerHTML = '<p class="muted">Tidak ada anomali tercatat.</p>';
+        return;
+      }
+      box.innerHTML = result.logs.map((log) => {
+        const meta = log.metadata ? escapeHtml(JSON.stringify(log.metadata)) : "";
+        return '<div class="panel section">' +
+          '<strong>' + escapeHtml(log.action) + '</strong> ' +
+          '<span class="muted small">' + escapeHtml(dateLabel(log.createdAt)) + '</span>' +
+          '<p>' + escapeHtml(log.description) + '</p>' +
+          '<p class="muted small">' + escapeHtml(log.entityType) + ': ' + escapeHtml(log.entityId || "-") + '</p>' +
+          '<p class="muted small">' + meta + '</p>' +
+          '</div>';
+      }).join("");
+    }
     async function loadView(view, force = false) {
       if (!force && loadedViews.has(view)) return;
 
@@ -893,7 +923,9 @@ function renderOrderRow(order, compact = false) {
     loadOrders(false),
     loadPackages()
   ]);
-}else if (view === "packages") {
+}else if (view === "reconciliation") {
+          await loadReconciliation();
+        } else if (view === "packages") {
           await loadPackages();
         }
 
@@ -903,7 +935,8 @@ function renderOrderRow(order, compact = false) {
           overview: "revenueValue",
           vouchers: "voucherMessage",
           orders: "ordersMessage",
-          packages: "generateMessage"
+          packages: "generateMessage",
+          reconciliation: "reconMessage"
         }[view];
 
         if (view === "overview") {
@@ -922,7 +955,7 @@ function renderOrderRow(order, compact = false) {
         button.classList.toggle("active", button.dataset.view === view);
       });
 
-      ["overview", "vouchers", "orders", "packages"].forEach((name) => {
+      ["overview", "vouchers", "orders", "packages", "reconciliation"].forEach((name) => {
         $(`view-${name}`).classList.toggle("hidden", name !== view);
       });
 
@@ -932,6 +965,8 @@ function renderOrderRow(order, compact = false) {
     document.querySelectorAll("[data-view]").forEach((button) => {
       button.addEventListener("click", () => showView(button.dataset.view));
     });
+
+    $("refreshReconButton").addEventListener("click", () => showView("reconciliation", true));
 
     document.querySelectorAll("[data-go]").forEach((button) => {
       button.addEventListener("click", () => showView(button.dataset.go));

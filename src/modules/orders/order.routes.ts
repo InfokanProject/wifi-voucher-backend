@@ -622,6 +622,43 @@ app.post<{
     });
   });
 
+  // Daftar anomali pembayaran untuk rekonsiliasi manual (hanya baca).
+  app.get("/api/admin/reconciliation", async (request, reply) => {
+    if (request.session.get("isAdmin") !== true) {
+      return reply.code(401).send({
+        error: "Akses admin diperlukan.",
+      });
+    }
+
+    const logs = await prisma.auditLog.findMany({
+      where: {
+        action: {
+          in: [
+            "LATE_PAYMENT_RECONCILIATION_REQUIRED",
+            "WEBHOOK_INVOICE_NOT_FOUND",
+            "WEBHOOK_AMOUNT_MISMATCH",
+            "WEBHOOK_PAYMENT_NOT_UNIQUE",
+            "WEBHOOK_PAYMENT_AMOUNT_MISMATCH",
+            "RECOVERY_FULFILLMENT_FAILED",
+          ],
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+      select: {
+        id: true,
+        action: true,
+        entityType: true,
+        entityId: true,
+        description: true,
+        metadata: true,
+        createdAt: true,
+      },
+    });
+
+    return reply.send({ total: logs.length, logs });
+  });
+
   // Detail order publik dengan field terbatas (Disertai Auto-Check Midtrans Fallback).
   app.get<{ Params: { id: string } }>(
     "/api/orders/:id",
