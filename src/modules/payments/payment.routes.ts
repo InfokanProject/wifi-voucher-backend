@@ -1418,6 +1418,7 @@ rawResponse: verifiedRawResponse as any,        },
                 status: "PAID",
                 paidAt: currentPayment.paidAt ?? now,
                 rawResponse: {
+                  ...(currentPayment.rawResponse && typeof currentPayment.rawResponse === "object" && !Array.isArray(currentPayment.rawResponse) ? (currentPayment.rawResponse as Record<string, unknown>) : {}),
                   webhook: body,
                 } as any,
               },
@@ -1507,6 +1508,7 @@ rawResponse: verifiedRawResponse as any,        },
               status:
                 body.event === "payment.expired" ? "EXPIRED" : "FAILED",
               rawResponse: {
+                ...(currentPayment.rawResponse && typeof currentPayment.rawResponse === "object" && !Array.isArray(currentPayment.rawResponse) ? (currentPayment.rawResponse as Record<string, unknown>) : {}),
                 webhook: body,
               } as any,
             },
