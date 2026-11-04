@@ -464,6 +464,43 @@ if (
   });
 }
 
+const recordMidtransAnomaly = async (
+  action: string,
+  description: string,
+  metadata: Record<string, unknown>,
+) => {
+  const success =
+    transactionStatus === "settlement" ||
+    (transactionStatus === "capture" && fraudStatus === "accept");
+  if (!success || !transactionId) return;
+  try {
+    const existing = await prisma.auditLog.findFirst({
+      where: {
+        action,
+        entityType: "Order",
+        entityId: order.id,
+        metadata: { path: ["transactionId"], equals: transactionId },
+      },
+      select: { id: true },
+    });
+    if (existing) return;
+    await prisma.auditLog.create({
+      data: {
+        action,
+        entityType: "Order",
+        entityId: order.id,
+        description,
+        metadata: { transactionId, orderNumber: order.orderNumber, ...metadata } as any,
+      },
+    });
+  } catch (auditError) {
+    request.log.error(
+      { err: auditError, orderId },
+      "Gagal mencatat audit log anomali Midtrans.",
+    );
+  }
+};
+
 // Pastikan hanya ada satu payment Midtrans.
 const midtransPayments = order.payments.filter(
   (p) => p.provider === "MIDTRANS",
@@ -476,6 +513,11 @@ if (midtransPayments.length !== 1) {
       midtransPaymentCount: midtransPayments.length,
     },
     "Jumlah payment Midtrans tidak sesuai.",
+  );
+  await recordMidtransAnomaly(
+    "WEBHOOK_PAYMENT_NOT_UNIQUE",
+    `Jumlah payment Midtrans untuk order ${order.orderNumber} tidak tepat satu.`,
+    { midtransPaymentCount: midtransPayments.length },
   );
 
   return reply.send({
@@ -493,6 +535,11 @@ if (payment.amount !== order.amount) {
       orderAmount: order.amount,
     },
     "Nominal payment Midtrans tidak cocok dengan order.",
+  );
+  await recordMidtransAnomaly(
+    "WEBHOOK_PAYMENT_AMOUNT_MISMATCH",
+    `Nominal payment Midtrans tidak cocok dengan order ${order.orderNumber}.`,
+    { paymentAmount: payment.amount, orderAmount: order.amount },
   );
 
   return reply.send({
