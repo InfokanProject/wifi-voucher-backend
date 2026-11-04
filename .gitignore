@@ -7,3 +7,7 @@ dist/
 *.dump
 *.bak
 src/scripts/
+# File cadangan lokal
+*.bak
+*.backup
+*.backup-*
