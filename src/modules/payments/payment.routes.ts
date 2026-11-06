@@ -1967,11 +1967,6 @@ rawResponse: verifiedRawResponse as any,        },
       });
     }
 
-    if (!order.voucherId || !order.voucher) {
-      return reply.code(409).send({
-        error: "Order tidak memiliki voucher yang terreservasi.",
-      });
-    }
 
             try {
       await prisma.$transaction(async (tx) => {
