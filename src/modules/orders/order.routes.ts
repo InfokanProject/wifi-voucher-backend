@@ -331,7 +331,41 @@ export async function orderRoutes(app: FastifyInstance) {
           });
 
           if (!voucher) {
-            throw new Error("STOK_VOUCHER_HABIS");
+            // Stok habis: order tunai tetap dibuat tanpa voucher.
+            // Voucher dibuat otomatis oleh fulfillOrder.
+            const noStockOrder = await tx.order.create({
+              data: {
+                orderNumber: makeOrderNumber(),
+                idempotencyKey,
+                packageId: pkg.id,
+                customerIdentifier: customerIdentifier || null,
+                amount: pkg.price,
+                status: "PAID",
+                paidAt: now,
+                expiresAt: null,
+              },
+              include: {
+                package: true,
+                voucher: true,
+              },
+            });
+            const noStockPayment = await tx.payment.create({
+              data: {
+                orderId: noStockOrder.id,
+                provider: "CASH",
+                method: "MANUAL",
+                amount: pkg.price,
+                status: "PAID",
+                paidAt: now,
+                providerTransactionId: `CASH-${noStockOrder.orderNumber}`,
+              },
+            });
+            await tx.order.update({
+              where: { id: noStockOrder.id },
+              data: { winningPaymentId: noStockPayment.id },
+            });
+            reservedOrder = noStockOrder;
+            break;
           }
 
           const claim = await tx.voucher.updateMany({
