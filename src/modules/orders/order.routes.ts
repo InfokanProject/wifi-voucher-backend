@@ -89,7 +89,22 @@ export async function orderRoutes(app: FastifyInstance) {
           });
 
           if (!voucher) {
-            throw new Error("STOK_VOUCHER_HABIS");
+            // Stok habis: order tetap dibuat tanpa voucher.
+            // Voucher dibuat otomatis setelah pembayaran terverifikasi (fulfillOrder).
+            reservedOrder = await tx.order.create({
+              data: {
+                orderNumber: makeOrderNumber(),
+                idempotencyKey,
+                packageId: pkg.id,
+                customerIdentifier: customerIdentifier?.trim() || null,
+                amount: pkg.price,
+                expiresAt: reservedUntil,
+              },
+              include: {
+                package: true,
+              },
+            });
+            break;
           }
 
           const claim = await tx.voucher.updateMany({

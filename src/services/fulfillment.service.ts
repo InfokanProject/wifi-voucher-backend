@@ -2,9 +2,41 @@ import { prisma } from "../lib/prisma";
 import { createMikrotikUser } from "./mikrotik.service";
 import { getMikrotikProfile } from "./mikrotik-profile";
 import { withOrderLock } from "./order-lock.service";
+import { generateStructuredVoucherCode } from "../utils/voucher-code";
+
+async function ensureVoucherForOrder(orderId: string) {
+  const o = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: { id: true, status: true, voucherId: true, package: { select: { id: true, code: true } } },
+  });
+  if (!o || o.voucherId) return;
+  if (o.status !== "PAID" && o.status !== "FULFILLING") return;
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const code = generateStructuredVoucherCode(o.package.code);
+    const clash = await prisma.voucher.findFirst({
+      where: { code: { equals: code, mode: "insensitive" } },
+      select: { id: true },
+    });
+    if (clash) continue;
+    await prisma.$transaction(async (tx) => {
+      const v = await tx.voucher.create({
+        data: { packageId: o.package.id, code, username: code, password: code, status: "RESERVED" },
+      });
+      const linked = await tx.order.updateMany({
+        where: { id: o.id, voucherId: null, status: { in: ["PAID", "FULFILLING"] } },
+        data: { voucherId: v.id },
+      });
+      if (linked.count !== 1) throw new Error("ORDER_VOUCHER_LINK_FAILED");
+    });
+    return;
+  }
+  throw new Error("VOUCHER_CODE_GENERATION_FAILED");
+}
 
 export async function fulfillOrder(orderId: string) {
   return withOrderLock(orderId, async () => {
+    await ensureVoucherForOrder(orderId);
     const order = await prisma.order.findUnique({
       where: { id: orderId },
       include: {

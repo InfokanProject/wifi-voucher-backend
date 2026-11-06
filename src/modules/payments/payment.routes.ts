@@ -93,7 +93,6 @@ export async function paymentRoutes(app: FastifyInstance) {
 
           if (
             currentOrder.status !== "PENDING" ||
-            !currentOrder.voucherId ||
             (currentOrder.expiresAt !== null &&
               currentOrder.expiresAt <= new Date())
           ) {
@@ -902,7 +901,6 @@ rawResponse: verifiedRawResponse as any,        },
 
           if (
             currentOrder.status !== "PENDING" ||
-            !currentOrder.voucherId ||
             (currentOrder.expiresAt !== null &&
               currentOrder.expiresAt <= now)
           ) {
